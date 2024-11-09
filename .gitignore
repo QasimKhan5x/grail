@@ -2,6 +2,7 @@
 __pycache__/
 tmp.txt
 experiments/
+data/
 
 #Saved and downloaded data files
 *.nt.gz
