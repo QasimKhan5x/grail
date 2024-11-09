@@ -47,7 +47,14 @@ class Trainer():
         all_labels = []
         all_scores = []
 
-        dataloader = DataLoader(self.train_data, batch_size=self.params.batch_size, shuffle=True, num_workers=self.params.num_workers, collate_fn=self.params.collate_fn)
+        dataloader = DataLoader(
+            self.train_data,
+            batch_size=self.params.batch_size,
+            shuffle=True,
+            num_workers=self.params.num_workers,
+            collate_fn=self.params.collate_fn,
+            persistent_workers=True 
+        )
         self.graph_classifier.train()
         model_params = list(self.graph_classifier.parameters())
         for b_idx, batch in enumerate(dataloader):
@@ -55,7 +62,19 @@ class Trainer():
             self.optimizer.zero_grad()
             score_pos = self.graph_classifier(data_pos)
             score_neg = self.graph_classifier(data_neg)
-            loss = self.criterion(score_pos, score_neg.view(len(score_pos), -1).mean(dim=1), torch.Tensor([1]).to(device=self.params.device))
+            batch_size = score_pos.size(0)
+
+            # Squeeze `score_pos` to make it [16] instead of [16, 1], if necessary
+            score_pos = score_pos.view(-1)
+            score_neg_mean = score_neg.view(batch_size, -1).mean(dim=1)
+
+            # Now, both score_pos and score_neg_mean should have shape [16]
+            loss = self.criterion(
+                score_pos, 
+                score_neg_mean, 
+                torch.ones(batch_size, device=self.params.device)
+            )
+
             # print(score_pos, score_neg, loss)
             loss.backward()
             self.optimizer.step()

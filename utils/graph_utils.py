@@ -98,6 +98,9 @@ def collate_dgl(samples):
 def move_batch_to_device_dgl(batch, device):
     ((g_dgl_pos, r_labels_pos), targets_pos, (g_dgl_neg, r_labels_neg), targets_neg) = batch
 
+    targets_pos = list(map(int, targets_pos))
+    targets_neg = list(map(int, targets_neg))
+
     targets_pos = torch.LongTensor(targets_pos).to(device=device)
     r_labels_pos = torch.LongTensor(r_labels_pos).to(device=device)
 
