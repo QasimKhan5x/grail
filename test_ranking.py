@@ -333,39 +333,134 @@ def prepare_features(subgraph, n_labels, max_n_label, n_feats=None):
 
 
 def get_subgraphs(all_links, adj_list, dgl_adj_list, max_node_label_value, id2entity, node_features=None, kge_entity2id=None):
-    # dgl_adj_list = ssp_multigraph_to_dgl(adj_list)
+    """
+    Extracts subgraphs for each link in all_links.
 
+    Parameters:
+    - all_links: Iterable of triplets (head, tail, relation)
+    - adj_list: List of adjacency matrices
+    - dgl_adj_list: DGLGraph corresponding to adj_list
+    - max_node_label_value: Maximum node label value for features
+    - id2entity: Mapping from node IDs to entity names
+    - node_features: Optional node feature matrix
+    - kge_entity2id: Optional mapping from entities to KGE IDs
+
+    Returns:
+    - batched_graph: Batched DGLGraph containing all subgraphs
+    - r_labels: Tensor of relation labels
+    """
     subgraphs = []
     r_labels = []
 
     for link in all_links:
         head, tail, rel = link[0], link[1], link[2]
-        nodes, node_labels = subgraph_extraction_labeling((head, tail), rel, adj_list, h=params_.hop, enclosing_sub_graph=params.enclosing_sub_graph, max_node_label_value=max_node_label_value)
+        
+        # Extract nodes and labels for the subgraph
+        nodes, node_labels = subgraph_extraction_labeling(
+            (head, tail), rel, adj_list,
+            h=params_.hop,
+            enclosing_sub_graph=params_.enclosing_sub_graph,
+            max_node_label_value=max_node_label_value
+        )
 
-        subgraph = dgl.DGLGraph(dgl_adj_list.subgraph(nodes))
-        subgraph.edata['type'] = dgl_adj_list.edata['type'][dgl_adj_list.subgraph(nodes).parent_eid]
-        subgraph.edata['label'] = torch.tensor(rel * np.ones(subgraph.edata['type'].shape), dtype=torch.long)
+        # Create subgraph using the list of nodes
+        subgraph = dgl_adj_list.subgraph(nodes)
 
-        edges_btw_roots = subgraph.edge_id(0, 1)
-        rel_link = np.nonzero(subgraph.edata['type'][edges_btw_roots] == rel)
+        # Assign 'type' and 'label' edge attributes based on parent edge IDs
+        parent_eids = subgraph.edata[dgl.EID]
+        subgraph.edata['type'] = dgl_adj_list.edata['type'][parent_eids]
+        subgraph.edata['label'] = torch.full(
+            (subgraph.number_of_edges(),),
+            rel,
+            dtype=torch.long,
+            device=subgraph.device  # Ensure the tensor is on the same device as the graph
+        )
 
-        if rel_link.squeeze().nelement() == 0:
-            # subgraph.add_edge(0, 1, {'type': torch.tensor([rel]), 'label': torch.tensor([rel])})
-            subgraph.add_edge(0, 1)
-            subgraph.edata['type'][-1] = torch.tensor(rel).type(torch.LongTensor)
-            subgraph.edata['label'][-1] = torch.tensor(rel).type(torch.LongTensor)
+        # Check if there is an edge between node 0 and node 1 with relation 'rel'
+        if subgraph.number_of_nodes() > 1:
+            if subgraph.has_edges_between(0, 1):
+                try:
+                    # Get edge IDs from node 0 to node 1
+                    eids_between_roots = subgraph.edge_ids(0, 1, return_uv=False)
+                    # Check if any of these edges have 'type' == rel
+                    rel_link = (subgraph.edata['type'][eids_between_roots] == rel).nonzero(as_tuple=False).squeeze()
+                except KeyError:
+                    # No valid edge exists
+                    rel_link = torch.tensor([], device=subgraph.device)
+            else:
+                rel_link = torch.tensor([], device=subgraph.device)
 
-        kge_nodes = [kge_entity2id[id2entity[n]] for n in nodes] if kge_entity2id else None
-        n_feats = node_features[kge_nodes] if node_features is not None else None
+            # If no such edge exists, add it with the appropriate attributes
+            if rel_link.numel() == 0:
+                # Add edge from node 0 to node 1 with 'type' and 'label' equal to 'rel'
+                subgraph = dgl.add_edges(
+                    subgraph,
+                    [0],
+                    [1],
+                    {'type': torch.tensor([rel], dtype=torch.long, device=subgraph.device),
+                     'label': torch.tensor([rel], dtype=torch.long, device=subgraph.device)}
+                )
+
+        # Handle KGE nodes and features if applicable
+        if kge_entity2id is not None:
+            kge_nodes = [kge_entity2id[id2entity[n]] for n in nodes]
+        else:
+            kge_nodes = None
+
+        if node_features is not None:
+            if kge_nodes is not None:
+                n_feats = node_features[kge_nodes]
+            else:
+                n_feats = None
+        else:
+            n_feats = None
+
+        # Prepare node features using the provided function
         subgraph = prepare_features(subgraph, node_labels, max_node_label_value, n_feats)
 
+        # Append the processed subgraph and its label
         subgraphs.append(subgraph)
         r_labels.append(rel)
 
+    # Batch all subgraphs into a single graph
     batched_graph = dgl.batch(subgraphs)
     r_labels = torch.LongTensor(r_labels)
 
-    return (batched_graph, r_labels)
+    return batched_graph, r_labels
+
+
+def save_to_file(neg_triplets, id2entity, id2relation, dataset):
+    with open(os.path.join('./data', dataset, 'ranking_head.txt'), "w") as f:
+        for neg_triplet in neg_triplets:
+            for s, o, r in neg_triplet['head'][0]:
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o]]) + '\n')
+
+    with open(os.path.join('./data', dataset, 'ranking_tail.txt'), "w") as f:
+        for neg_triplet in neg_triplets:
+            for s, o, r in neg_triplet['tail'][0]:
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o]]) + '\n')
+
+def save_score_to_file(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset):
+    with open(os.path.join('./data', dataset, 'grail_ranking_head_predictions.txt'), "w") as f:
+        for i, neg_triplet in enumerate(neg_triplets):
+            for [s, o, r], head_score in zip(neg_triplet['head'][0], all_head_scores[50 * i:50 * (i + 1)]):
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(head_score)]) + '\n')
+
+    with open(os.path.join('./data', dataset, 'grail_ranking_tail_predictions.txt'), "w") as f:
+        for i, neg_triplet in enumerate(neg_triplets):
+            for [s, o, r], tail_score in zip(neg_triplet['tail'][0], all_tail_scores[50 * i:50 * (i + 1)]):
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(tail_score)]) + '\n')
+
+def save_score_to_file_from_ruleN(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset):
+    with open(os.path.join('./data', dataset, 'grail_ruleN_ranking_head_predictions.txt'), "w") as f:
+        for i, neg_triplet in enumerate(neg_triplets):
+            for [s, o, r], head_score in zip(neg_triplet['head'][0], all_head_scores[50 * i:50 * (i + 1)]):
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(head_score)]) + '\n')
+
+    with open(os.path.join('./data', dataset, 'grail_ruleN_ranking_tail_predictions.txt'), "w") as f:
+        for i, neg_triplet in enumerate(neg_triplets):
+            for [s, o, r], tail_score in zip(neg_triplet['tail'][0], all_tail_scores[50 * i:50 * (i + 1)]):
+                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(tail_score)]) + '\n')
 
 
 def get_rank(neg_links):
@@ -394,45 +489,6 @@ def get_rank(neg_links):
     return head_scores, head_rank, tail_scores, tail_rank
 
 
-def save_to_file(neg_triplets, id2entity, id2relation):
-
-    with open(os.path.join('./data', params.dataset, 'ranking_head.txt'), "w") as f:
-        for neg_triplet in neg_triplets:
-            for s, o, r in neg_triplet['head'][0]:
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o]]) + '\n')
-
-    with open(os.path.join('./data', params.dataset, 'ranking_tail.txt'), "w") as f:
-        for neg_triplet in neg_triplets:
-            for s, o, r in neg_triplet['tail'][0]:
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o]]) + '\n')
-
-
-def save_score_to_file(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation):
-
-    with open(os.path.join('./data', params.dataset, 'grail_ranking_head_predictions.txt'), "w") as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], head_score in zip(neg_triplet['head'][0], all_head_scores[50 * i:50 * (i + 1)]):
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(head_score)]) + '\n')
-
-    with open(os.path.join('./data', params.dataset, 'grail_ranking_tail_predictions.txt'), "w") as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], tail_score in zip(neg_triplet['tail'][0], all_tail_scores[50 * i:50 * (i + 1)]):
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(tail_score)]) + '\n')
-
-
-def save_score_to_file_from_ruleN(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation):
-
-    with open(os.path.join('./data', params.dataset, 'grail_ruleN_ranking_head_predictions.txt'), "w") as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], head_score in zip(neg_triplet['head'][0], all_head_scores[50 * i:50 * (i + 1)]):
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(head_score)]) + '\n')
-
-    with open(os.path.join('./data', params.dataset, 'grail_ruleN_ranking_tail_predictions.txt'), "w") as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], tail_score in zip(neg_triplet['tail'][0], all_tail_scores[50 * i:50 * (i + 1)]):
-                f.write('\t'.join([id2entity[s], id2relation[r], id2entity[o], str(tail_score)]) + '\n')
-
-
 def get_kge_embeddings(dataset, kge_model):
 
     path = './experiments/kge_baselines/{}_{}'.format(kge_model, dataset)
@@ -447,42 +503,49 @@ def get_kge_embeddings(dataset, kge_model):
 def main(params):
     model = torch.load(params.model_path, map_location='cpu')
 
-    adj_list, dgl_adj_list, triplets, entity2id, relation2id, id2entity, id2relation = process_files(params.file_paths, model.relation2id, params.add_traspose_rels)
+    adj_list, dgl_adj_list, triplets, entity2id, relation2id, id2entity, id2relation = process_files(
+        params.file_paths, model.relation2id, params.add_traspose_rels
+    )
 
-    node_features, kge_entity2id = get_kge_embeddings(params.dataset, params.kge_model) if params.use_kge_embeddings else (None, None)
+    node_features, kge_entity2id = get_kge_embeddings(
+        params.dataset, params.kge_model
+    ) if params.use_kge_embeddings else (None, None)
 
     if params.mode == 'sample':
         neg_triplets = get_neg_samples_replacing_head_tail(triplets['links'], adj_list)
-        save_to_file(neg_triplets, id2entity, id2relation)
+        save_to_file(neg_triplets, id2entity, id2relation, params.dataset)  # Passed dataset
     elif params.mode == 'all':
         neg_triplets = get_neg_samples_replacing_head_tail_all(triplets['links'], adj_list)
     elif params.mode == 'ruleN':
-        neg_triplets = get_neg_samples_replacing_head_tail_from_ruleN(params.ruleN_pred_path, entity2id, relation2id)
+        neg_triplets = get_neg_samples_replacing_head_tail_from_ruleN(
+            params.ruleN_pred_path, entity2id, relation2id
+        )
 
     ranks = []
     all_head_scores = []
     all_tail_scores = []
-    with mp.Pool(processes=None, initializer=intialize_worker, initargs=(model, adj_list, dgl_adj_list, id2entity, params, node_features, kge_entity2id)) as p:
-        for head_scores, head_rank, tail_scores, tail_rank in tqdm(p.imap(get_rank, neg_triplets), total=len(neg_triplets)):
+    with mp.Pool(
+        processes=None,
+        initializer=intialize_worker,
+        initargs=(model, adj_list, dgl_adj_list, id2entity, params, node_features, kge_entity2id)
+    ) as p:
+        for head_scores, head_rank, tail_scores, tail_rank in tqdm(
+            p.imap(get_rank, neg_triplets), total=len(neg_triplets)
+        ):
             ranks.append(head_rank)
             ranks.append(tail_rank)
 
             all_head_scores += head_scores.tolist()
             all_tail_scores += tail_scores.tolist()
 
-    # intialize_worker(model, adj_list, dgl_adj_list, id2entity, params, node_features, kge_entity2id)
-    # for link in tqdm(neg_triplets, total=len(neg_triplets)):
-    #     head_scores, head_rank, tail_scores, tail_rank = get_rank(link)
-    #     ranks.append(head_rank)
-    #     ranks.append(tail_rank)
-
-    #     all_head_scores += head_scores.tolist()
-    #     all_tail_scores += tail_scores.tolist()
-
     if params.mode == 'ruleN':
-        save_score_to_file_from_ruleN(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation)
+        save_score_to_file_from_ruleN(
+            neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, params.dataset
+        )
     else:
-        save_score_to_file(neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation)
+        save_score_to_file(
+            neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, params.dataset
+        )
 
     isHit1List = [x for x in ranks if x <= 1]
     isHit5List = [x for x in ranks if x <= 5]
