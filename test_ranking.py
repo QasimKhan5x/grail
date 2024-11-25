@@ -305,8 +305,7 @@ def ssp_multigraph_to_dgl(graph, n_feats=None):
         g_nx.add_edges_from(nx_triplets)
 
     # make dgl graph
-    g_dgl = dgl.DGLGraph(multigraph=True)
-    g_dgl.from_networkx(g_nx, edge_attrs=['type'])
+    g_dgl = dgl.from_networkx(g_nx, edge_attrs=['type'])
     # add node features
     if n_feats is not None:
         g_dgl.ndata['feat'] = torch.tensor(n_feats)
@@ -520,7 +519,6 @@ if __name__ == '__main__':
                         help="How many hops to go while eextracting subgraphs?")
     parser.add_argument('--add_traspose_rels', '-tr', type=bool, default=False,
                         help='Whether to append adj matrix list with symmetric relations?')
-
     params = parser.parse_args()
 
     params.file_paths = {
