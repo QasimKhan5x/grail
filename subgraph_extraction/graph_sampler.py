@@ -138,7 +138,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
 
 def get_average_subgraph_size(sample_size, links, A, params):
     total_size = 0
-    for (n1, n2, r_label) in links[np.random.choice(len(links), sample_size)]:
+    for (n1, n2, r_label) in tqdm(links[np.random.choice(len(links), sample_size)]):
         nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling((n1, n2), r_label, A, params.hop, params.enclosing_sub_graph, params.max_nodes_per_hop)
         datum = {'nodes': nodes, 'r_label': r_label, 'g_label': 0, 'n_labels': n_labels, 'subgraph_size': subgraph_size, 'enc_ratio': enc_ratio, 'num_pruned_nodes': num_pruned_nodes}
         total_size += len(serialize(datum))
