@@ -114,6 +114,7 @@ def move_batch_to_device_dgl(batch, device):
 
 
 def send_graph_to_device(g, device):
+    g = g.to(device)
     # nodes
     labels = g.node_attr_schemes()
     for l in labels.keys():
