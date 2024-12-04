@@ -1,0 +1,15 @@
+numpy==1.26.4
+networkx
+scikit-learn
+tqdm
+pandas
+PyYAML
+pydantic
+matplotlib
+packaging
+setuptools==75.3.0
+lmdb
+torch==1.11.0+cu113
+--extra-index-url https://download.pytorch.org/whl/cu113
+dgl==1.0.0
+-f https://data.dgl.ai/wheels/cu113/repo.html
