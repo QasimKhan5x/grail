@@ -3,6 +3,7 @@ __pycache__/
 tmp.txt
 experiments/
 data/
+logs/
 
 #Saved and downloaded data files
 *.nt.gz
@@ -11,3 +12,4 @@ data/
 *.ipynb
 *.npy
 *.pyc
+*.slurm
