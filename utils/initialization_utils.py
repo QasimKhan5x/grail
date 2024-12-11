@@ -48,7 +48,7 @@ def initialize_model(params, model, load_model=False):
         logging.info('Loading existing model from %s' % os.path.join(params.exp_dir, 'best_graph_classifier.pth'))
         graph_classifier = torch.load(os.path.join(params.exp_dir, 'best_graph_classifier.pth')).to(device=params.device)
     else:
-        relation2id_path = os.path.join(params.main_dir, f'data/{params.dataset}/relation2id.json')
+        relation2id_path = os.path.join(params.data_dir, f'data/{params.dataset}/relation2id.json')
         with open(relation2id_path) as f:
             relation2id = json.load(f)
 

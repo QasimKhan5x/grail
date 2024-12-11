@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from sklearn import metrics
-
+from tqdm import tqdm
 
 class Trainer():
     def __init__(self, params, graph_classifier, train, valid_evaluator=None):
@@ -57,7 +57,7 @@ class Trainer():
         )
         self.graph_classifier.train()
         model_params = list(self.graph_classifier.parameters())
-        for b_idx, batch in enumerate(dataloader):
+        for b_idx, batch in enumerate(tqdm(dataloader)):
             data_pos, targets_pos, data_neg, targets_neg = self.params.move_batch_to_device(batch, self.params.device)
             self.optimizer.zero_grad()
             score_pos = self.graph_classifier(data_pos)

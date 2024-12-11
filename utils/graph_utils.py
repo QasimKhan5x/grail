@@ -115,15 +115,15 @@ def move_batch_to_device_dgl(batch, device):
 
 def send_graph_to_device(g, device):
     g = g.to(device)
-    # nodes
-    labels = g.node_attr_schemes()
-    for l in labels.keys():
-        g.ndata[l] = g.ndata.pop(l).to(device)
+    # # nodes
+    # labels = g.node_attr_schemes()
+    # for l in labels.keys():
+    #     g.ndata[l] = g.ndata.pop(l).to(device)
 
-    # edges
-    labels = g.edge_attr_schemes()
-    for l in labels.keys():
-        g.edata[l] = g.edata.pop(l).to(device)
+    # # edges
+    # labels = g.edge_attr_schemes()
+    # for l in labels.keys():
+    #     g.edata[l] = g.edata.pop(l).to(device)
     return g
 
 #  The following three functions are modified from networks source codes to

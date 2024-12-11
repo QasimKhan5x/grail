@@ -24,7 +24,7 @@ def generate_subgraph_datasets(
 
     # plot_rel_dist(adj_list, os.path.join(params.main_dir, f'data/{params.dataset}/rel_dist.png'))
 
-    data_path = os.path.join(params.main_dir, f"data/{params.dataset}/relation2id.json")
+    data_path = os.path.join(params.data_dir, f"data/{params.dataset}/relation2id.json")
     if not os.path.isdir(data_path) and not testing:
         with open(data_path, "w") as f:
             json.dump(relation2id, f)

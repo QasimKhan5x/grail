@@ -1,5 +1,5 @@
 import os
-import shutil
+
 import argparse
 import logging
 import torch
@@ -21,8 +21,9 @@ def main(params):
     simplefilter(action='ignore', category=UserWarning)
     simplefilter(action='ignore', category=SparseEfficiencyWarning)
 
-    params.db_path = f'data/{params.dataset}/subgraphs_en_{params.enclosing_sub_graph}_neg_{params.num_neg_samples_per_link}_hop_{params.hop}'
+    params.db_path = f'{params.data_dir}/data/{params.dataset}/subgraphs_en_{params.enclosing_sub_graph}_neg_{params.num_neg_samples_per_link}_hop_{params.hop}'
 
+    # import shutil
     # if os.path.isdir(params.db_path):
     #     shutil.rmtree(params.db_path)
     if not os.path.isdir(params.db_path):
@@ -155,16 +156,18 @@ if __name__ == '__main__':
     params = parser.parse_args()
     initialize_experiment(params, __file__)
 
+    params.data_dir = "/gpfs/workdir/yutaoc/grail"
+
     params.file_paths = {
-        'train': os.path.join(params.main_dir, 'data/{}/{}.txt'.format(params.dataset, params.train_file)),
-        'valid': os.path.join(params.main_dir, 'data/{}/{}.txt'.format(params.dataset, params.valid_file))
+        'train': os.path.join(params.data_dir, 'data/{}/{}.txt'.format(params.dataset, params.train_file)),
+        'valid': os.path.join(params.data_dir, 'data/{}/{}.txt'.format(params.dataset, params.valid_file))
     }
 
     if not params.disable_cuda and torch.cuda.is_available():
         params.device = torch.device('cuda:%d' % params.gpu)
     else:
         params.device = torch.device('cpu')
-
+    print("Training via", params.device)
     params.collate_fn = collate_dgl
     params.move_batch_to_device = move_batch_to_device_dgl
 

@@ -1,4 +1,4 @@
-folder = "data/YAGO"
+folder = "data/DBpedia"
 
 # Load entity2id and relation2id mappings
 def load_mapping(file_path):

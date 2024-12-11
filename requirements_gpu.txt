@@ -9,7 +9,5 @@ matplotlib
 packaging
 setuptools==75.3.0
 lmdb
-torch==1.11.0+cu113
---extra-index-url https://download.pytorch.org/whl/cu113
-dgl==1.0.0
--f https://data.dgl.ai/wheels/cu113/repo.html
+dgl 
+-f https://data.dgl.ai/wheels/torch-2.4/cu121/repo.html
