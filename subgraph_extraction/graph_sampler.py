@@ -1,64 +1,71 @@
-import os
 import math
+from collections import deque
 import struct
 import logging
-import random
-import pickle as pkl
-import pdb
 from tqdm import tqdm
 import lmdb
 import multiprocessing as mp
 import numpy as np
-import scipy.io as sio
-import scipy.sparse as ssp
-import sys
-import torch
-from scipy.special import softmax
-from utils.dgl_utils import _bfs_relational
-from utils.graph_utils import incidence_matrix, remove_nodes, ssp_to_torch, serialize, deserialize, get_edge_count, diameter, radius
-import networkx as nx
+from collections import deque
+from scipy.sparse import coo_matrix
+from utils.graph_utils import  serialize
+from joblib import Parallel, delayed
+from tqdm_joblib import tqdm_joblib 
 
 
 def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, constrained_neg_prob=0):
-    pos_edges = edges
-    neg_edges = []
+    """
+    Fully vectorized negative sampling for train/test datasets.
 
-    # if max_size is set, randomly sample train links
+    Parameters:
+        adj_list (list): List of adjacency matrices (one per relation).
+        edges (ndarray): Positive edges [head, tail, relation].
+        num_neg_samples_per_link (int): Number of negative samples per positive edge.
+        max_size (int): Max number of edges to process.
+        constrained_neg_prob (float): Probability of sampling constrained negatives.
+
+    Returns:
+        pos_edges, neg_edges: Positive and negative edges.
+    """
+    pos_edges = edges
+
+    # Step 1: Limit the number of positive edges
     if max_size < len(pos_edges):
         perm = np.random.permutation(len(pos_edges))[:max_size]
         pos_edges = pos_edges[perm]
 
-    # sample negative links for train/test
-    n, r = adj_list[0].shape[0], len(adj_list)
+    n = adj_list[0].shape[0]  # Number of nodes
+    r = len(adj_list)         # Number of relations
 
-    # distribution of edges across reelations
-    theta = 0.001
-    edge_count = get_edge_count(adj_list)
-    rel_dist = np.zeros(edge_count.shape)
-    idx = np.nonzero(edge_count)
-    rel_dist[idx] = softmax(theta * edge_count[idx])
+    # Step 2: Convert the adjacency list to a single block diagonal matrix for efficiency
+    adj_block = coo_matrix(([], ([], [])), shape=(n * r, n))  # Initialize empty block
+    for rel_idx, adj in enumerate(adj_list):
+        row, col, data = adj.tocoo().row, adj.tocoo().col, adj.tocoo().data
+        adj_block += coo_matrix((data, (row + rel_idx * n, col)), shape=(n * r, n))
 
-    # possible head and tails for each relation
-    valid_heads = [adj.tocoo().row.tolist() for adj in adj_list]
-    valid_tails = [adj.tocoo().col.tolist() for adj in adj_list]
+    adj_csr = adj_block.tocsr()  # Convert to CSR for fast slicing
 
-    pbar = tqdm(total=len(pos_edges))
+    neg_edges = []
+    pbar = tqdm(total=num_neg_samples_per_link * len(pos_edges), desc="Negative Sampling")
+
+    # Step 3: Fully vectorized sampling
     while len(neg_edges) < num_neg_samples_per_link * len(pos_edges):
-        neg_head, neg_tail, rel = pos_edges[pbar.n % len(pos_edges)][0], pos_edges[pbar.n % len(pos_edges)][1], pos_edges[pbar.n % len(pos_edges)][2]
-        if np.random.uniform() < constrained_neg_prob:
-            if np.random.uniform() < 0.5:
-                neg_head = np.random.choice(valid_heads[rel])
-            else:
-                neg_tail = np.random.choice(valid_tails[rel])
-        else:
-            if np.random.uniform() < 0.5:
-                neg_head = np.random.choice(n)
-            else:
-                neg_tail = np.random.choice(n)
+        batch_size = min(10000, num_neg_samples_per_link * len(pos_edges) - len(neg_edges))
+        neg_heads = np.random.choice(n, size=batch_size)
+        neg_tails = np.random.choice(n, size=batch_size)
+        rels = np.random.choice(r, size=batch_size)
 
-        if neg_head != neg_tail and adj_list[rel][neg_head, neg_tail] == 0:
-            neg_edges.append([neg_head, neg_tail, rel])
-            pbar.update(1)
+        # Map relation indices to block offsets in the adjacency matrix
+        row_offsets = rels * n
+        rows = row_offsets + neg_heads
+
+        # Check if the sampled edges are valid (do not exist in the adjacency matrix)
+        valid_mask = (neg_heads != neg_tails) & (np.asarray(adj_csr[rows, neg_tails]).ravel() == 0)
+
+        # Collect valid edges
+        valid_neg_edges = np.stack([neg_heads[valid_mask], neg_tails[valid_mask], rels[valid_mask]], axis=1)
+        neg_edges.extend(valid_neg_edges.tolist())
+        pbar.update(len(valid_neg_edges))
 
     pbar.close()
 
@@ -67,53 +74,88 @@ def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, co
 
 
 def links2subgraphs(A, graphs, params, max_label_value=None):
-    '''
-    extract enclosing subgraphs, write map mode + named dbs
-    '''
+    """
+    Extract enclosing subgraphs, write in batch mode to LMDB, and handle parallel processing efficiently.
+
+    Parameters:
+        A (list): List of adjacency matrices for the graph.
+        graphs (dict): Dictionary containing positive and negative links for each split.
+        params (Namespace): Configuration parameters.
+        max_label_value (int, optional): Maximum node label value.
+
+    Returns:
+        None: Writes results to LMDB.
+    """
     max_n_label = {'value': np.array([0, 0])}
     subgraph_sizes = []
     enc_ratios = []
     num_pruned_nodes = []
 
+    # Estimate the LMDB map size
     BYTES_PER_DATUM = get_average_subgraph_size(100, list(graphs.values())[0]['pos'], A, params) * 1.5
-    links_length = 0
-    for split_name, split in graphs.items():
-        links_length += (len(split['pos']) + len(split['neg'])) * 2
-        
+    links_length = sum((len(split['pos']) + len(split['neg'])) * 2 for split in graphs.values())
     map_size = math.ceil(links_length * BYTES_PER_DATUM) * 2
+
     env = lmdb.open(params.db_path, map_size=map_size, max_dbs=6)
 
+    def batch_write_lmdb(txn, data_batch):
+        """Batch writes data to LMDB."""
+        for key, value in data_batch:
+            txn.put(key, serialize(value))
+
     def extraction_helper(A, links, g_labels, split_env):
+        """Helper function to parallelize subgraph extraction and write results with a real-time progress bar."""
+        batch_size = 1000
+        data_batch = []
 
+        # Write the number of graphs to LMDB before starting extraction
         with env.begin(write=True, db=split_env) as txn:
-            txn.put('num_graphs'.encode(), (len(links)).to_bytes(int.bit_length(len(links)), byteorder='little'))
+            txn.put('num_graphs'.encode(), len(links).to_bytes(int.bit_length(len(links)), byteorder='little'))
 
-        with mp.Pool(processes=None, initializer=intialize_worker, initargs=(A, params, max_label_value)) as p:
-            args_ = zip(range(len(links)), links, g_labels)
-            for (str_id, datum) in tqdm(p.imap(extract_save_subgraph, args_), total=len(links)):
-                max_n_label['value'] = np.maximum(np.max(datum['n_labels'], axis=0), max_n_label['value'])
-                subgraph_sizes.append(datum['subgraph_size'])
-                enc_ratios.append(datum['enc_ratio'])
-                num_pruned_nodes.append(datum['num_pruned_nodes'])
 
+        with tqdm_joblib(tqdm(total=len(links), desc="Extracting Subgraphs")):
+            # Extract subgraphs in parallel with real-time progress
+            results = Parallel(n_jobs=mp.cpu_count(), backend="loky")(
+                delayed(extract_save_subgraph)((idx, link, g_label), A, params, max_label_value)
+                for idx, (link, g_label) in enumerate(zip(links, g_labels))
+            )
+
+        # Batch write results to LMDB
+        for (str_id, datum) in results:
+            max_n_label['value'] = np.maximum(np.max(datum['n_labels'], axis=0), max_n_label['value'])
+            subgraph_sizes.append(datum['subgraph_size'])
+            enc_ratios.append(datum['enc_ratio'])
+            num_pruned_nodes.append(datum['num_pruned_nodes'])
+
+            data_batch.append((str_id, datum))
+            if len(data_batch) >= batch_size:
                 with env.begin(write=True, db=split_env) as txn:
-                    txn.put(str_id, serialize(datum))
+                    batch_write_lmdb(txn, data_batch)
+                data_batch = []
 
+        # Write any remaining data
+        if data_batch:
+            with env.begin(write=True, db=split_env) as txn:
+                batch_write_lmdb(txn, data_batch)
+
+
+
+    # Process each split (train/valid/test)
     for split_name, split in graphs.items():
         logging.info(f"Extracting enclosing subgraphs for positive links in {split_name} set")
-        labels = np.ones(len(split['pos']))
+        labels = np.ones(len(split['pos']), dtype=np.int8)
         db_name_pos = split_name + '_pos'
         split_env = env.open_db(db_name_pos.encode())
         extraction_helper(A, split['pos'], labels, split_env)
 
         logging.info(f"Extracting enclosing subgraphs for negative links in {split_name} set")
-        labels = np.zeros(len(split['neg']))
+        labels = np.zeros(len(split['neg']), dtype=np.int8)
         db_name_neg = split_name + '_neg'
         split_env = env.open_db(db_name_neg.encode())
         extraction_helper(A, split['neg'], labels, split_env)
 
+    # Store overall statistics in LMDB
     max_n_label['value'] = max_label_value if max_label_value is not None else max_n_label['value']
-
     with env.begin(write=True) as txn:
         bit_len_label_sub = int.bit_length(int(max_n_label['value'][0]))
         bit_len_label_obj = int.bit_length(int(max_n_label['value'][1]))
@@ -136,6 +178,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
         txn.put('std_num_pruned_nodes'.encode(), struct.pack('f', float(np.std(num_pruned_nodes))))
 
 
+
 def get_average_subgraph_size(sample_size, links, A, params):
     total_size = 0
     for (n1, n2, r_label) in tqdm(links[np.random.choice(len(links), sample_size)]):
@@ -150,76 +193,113 @@ def intialize_worker(A, params, max_label_value):
     A_, params_, max_label_value_ = A, params, max_label_value
 
 
-def extract_save_subgraph(args_):
+def extract_save_subgraph(args_, A, params, max_label_value):
+    """
+    Extract and save a subgraph for a given edge.
+    """
     idx, (n1, n2, r_label), g_label = args_
-    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling((n1, n2), r_label, A_, params_.hop, params_.enclosing_sub_graph, params_.max_nodes_per_hop)
+    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
+        (n1, n2), r_label, A, params.hop, params.enclosing_sub_graph, params.max_nodes_per_hop
+    )
 
-    # max_label_value_ is to set the maximum possible value of node label while doing double-radius labelling.
-    if max_label_value_ is not None:
-        n_labels = np.array([np.minimum(label, max_label_value_).tolist() for label in n_labels])
+    # Ensure n_labels is valid
+    if n_labels.size == 0:
+        n_labels = np.array([[0, 1], [1, 0]])  # Default labels for fallback case
+        nodes = [n1, n2]
+        subgraph_size = 2
+        enc_ratio = 1.0
+        num_pruned_nodes = 0
 
-    datum = {'nodes': nodes, 'r_label': r_label, 'g_label': g_label, 'n_labels': n_labels, 'subgraph_size': subgraph_size, 'enc_ratio': enc_ratio, 'num_pruned_nodes': num_pruned_nodes}
+    # Cap node labels if max_label_value is set
+    if max_label_value is not None:
+        n_labels = np.array([np.minimum(label, max_label_value).tolist() for label in n_labels])
+
+    datum = {
+        'nodes': nodes,
+        'r_label': r_label,
+        'g_label': g_label,
+        'n_labels': n_labels,
+        'subgraph_size': subgraph_size,
+        'enc_ratio': enc_ratio,
+        'num_pruned_nodes': num_pruned_nodes
+    }
     str_id = '{:08}'.format(idx).encode('ascii')
-
-    return (str_id, datum)
-
-
-def get_neighbor_nodes(roots, adj, h=1, max_nodes_per_hop=None):
-    bfs_generator = _bfs_relational(adj, roots, max_nodes_per_hop)
-    lvls = list()
-    for _ in range(h):
-        try:
-            lvls.append(next(bfs_generator))
-        except StopIteration:
-            pass
-    return set().union(*lvls)
+    return str_id, datum
 
 
-def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=False, max_nodes_per_hop=None, max_node_label_value=None):
-    # extract the h-hop enclosing subgraphs around link 'ind'
-    A_incidence = incidence_matrix(A_list)
-    A_incidence += A_incidence.T
 
-    root1_nei = get_neighbor_nodes(set([ind[0]]), A_incidence, h, max_nodes_per_hop)
-    root2_nei = get_neighbor_nodes(set([ind[1]]), A_incidence, h, max_nodes_per_hop)
+def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=False,
+                                 max_nodes_per_hop=None, max_node_label_value=None):
+    """
+    Extract the h-hop enclosing subgraph around link 'ind' and filter unreachable nodes.
 
-    subgraph_nei_nodes_int = root1_nei.intersection(root2_nei)
-    subgraph_nei_nodes_un = root1_nei.union(root2_nei)
+    Parameters:
+        ind (tuple): Target node pair (u, v).
+        rel (int): Relation index.
+        A_list (list): List of adjacency matrices in CSR format.
+        h (int): Maximum number of hops.
+        enclosing_sub_graph (bool): Whether to use intersection (True).
+        max_nodes_per_hop (int, optional): Not used but kept for compatibility.
+        max_node_label_value (int, optional): Maximum node label value.
 
-    # Extract subgraph | Roots being in the front is essential for labelling and the model to work properly.
-    if enclosing_sub_graph:
-        subgraph_nodes = list(ind) + list(subgraph_nei_nodes_int)
-    else:
-        subgraph_nodes = list(ind) + list(subgraph_nei_nodes_un)
+    Returns:
+        tuple: (pruned_subgraph_nodes, pruned_labels, subgraph_size, enc_ratio, num_pruned_nodes)
+    """
+    def bidirectional_bfs(u, v, adj_matrix, max_hops):
+        visited_u, visited_v = {}, {}
+        queue_u, queue_v = deque([(u, 0)]), deque([(v, 0)])
 
-    subgraph = [adj[subgraph_nodes, :][:, subgraph_nodes] for adj in A_list]
+        while queue_u or queue_v:
+            # BFS from u
+            if queue_u:
+                node, dist = queue_u.popleft()
+                if node not in visited_u and dist <= max_hops:
+                    visited_u[node] = dist
+                    for neighbor in adj_matrix[node].indices:
+                        if neighbor not in visited_u:
+                            queue_u.append((neighbor, dist + 1))
 
-    labels, enclosing_subgraph_nodes = node_label(incidence_matrix(subgraph), max_distance=h)
+            # BFS from v
+            if queue_v:
+                node, dist = queue_v.popleft()
+                if node not in visited_v and dist <= max_hops:
+                    visited_v[node] = dist
+                    for neighbor in adj_matrix[node].indices:
+                        if neighbor not in visited_v:
+                            queue_v.append((neighbor, dist + 1))
 
-    pruned_subgraph_nodes = np.array(subgraph_nodes)[enclosing_subgraph_nodes].tolist()
-    pruned_labels = labels[enclosing_subgraph_nodes]
-    # pruned_subgraph_nodes = subgraph_nodes
-    # pruned_labels = labels
+        return visited_u, visited_v
 
+
+    u, v = ind
+    u, v = ind
+    adj_matrix = sum(A_list)  # Combine adjacency matrices into a single undirected graph
+
+    # (optimization) Use only the specific adjacency matrix for the given relation
+    # adj_matrix = A_list[rel]
+
+    # Step 1: BFS neighbors and distances from u and v
+    distances_u, distances_v = bidirectional_bfs(u, v, adj_matrix, h)
+    # Add v to u's distances and vice versa
+    distances_u[v] = 1
+    distances_v[u] = 1
+
+    # Step 2: Intersection of reachable nodes
+    reachable_nodes = set(distances_u.keys()) & set(distances_v.keys())
+    num_pruned_nodes = len(set(distances_u.keys()) | set(distances_v.keys())) - len(reachable_nodes)
+
+    # Step 3: Build subgraph nodes
+    subgraph_nodes = sorted(reachable_nodes)
+
+    # Step 4: Assign labels explicitly for u and v
+    labels = np.array([[distances_u[node], distances_v[node]] for node in subgraph_nodes], dtype=int)
+
+    # Cap labels if max_node_label_value is specified
     if max_node_label_value is not None:
-        pruned_labels = np.array([np.minimum(label, max_node_label_value).tolist() for label in pruned_labels])
+        labels = np.minimum(labels, max_node_label_value)
 
-    subgraph_size = len(pruned_subgraph_nodes)
-    enc_ratio = len(subgraph_nei_nodes_int) / (len(subgraph_nei_nodes_un) + 1e-3)
-    num_pruned_nodes = len(subgraph_nodes) - len(pruned_subgraph_nodes)
+    # Step 5: Metrics
+    subgraph_size = len(subgraph_nodes)
+    enc_ratio = len(reachable_nodes) / (len(set(distances_u.keys()) | set(distances_v.keys())) + 1e-3)
 
-    return pruned_subgraph_nodes, pruned_labels, subgraph_size, enc_ratio, num_pruned_nodes
-
-
-def node_label(subgraph, max_distance=1):
-    # implementation of the node labeling scheme described in the paper
-    roots = [0, 1]
-    sgs_single_root = [remove_nodes(subgraph, [root]) for root in roots]
-    dist_to_roots = [np.clip(ssp.csgraph.dijkstra(sg, indices=[0], directed=False, unweighted=True, limit=1e6)[:, 1:], 0, 1e7) for r, sg in enumerate(sgs_single_root)]
-    dist_to_roots = np.array(list(zip(dist_to_roots[0][0], dist_to_roots[1][0])), dtype=int)
-
-    target_node_labels = np.array([[0, 1], [1, 0]])
-    labels = np.concatenate((target_node_labels, dist_to_roots)) if dist_to_roots.size else target_node_labels
-
-    enclosing_subgraph_nodes = np.where(np.max(labels, axis=1) <= max_distance)[0]
-    return labels, enclosing_subgraph_nodes
+    return subgraph_nodes, labels, subgraph_size, enc_ratio, num_pruned_nodes

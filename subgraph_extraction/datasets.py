@@ -7,12 +7,13 @@ import numpy as np
 import json
 import pickle
 import dgl
-from utils.graph_utils import ssp_multigraph_to_dgl, incidence_matrix
+from utils.graph_utils import ssp_multigraph_to_dgl, deserialize
 from utils.data_utils import process_files, save_to_file, plot_rel_dist
+from utils.time_utils import timing_decorator
 from .graph_sampler import *
-import pdb
+import torch
 
-
+@timing_decorator
 def generate_subgraph_datasets(
     params, splits=["train", "valid"], saved_relation2id=None, max_label_value=None
 ):
@@ -277,123 +278,46 @@ class SubgraphDataset(Dataset):
     def __len__(self):
         return self.num_graphs_pos
 
-    # def _prepare_subgraphs(self, nodes, r_label, n_labels):
-    #     # Step 1: Create the subgraph from the given nodes
-    #     subgraph = self.graph.subgraph(nodes, store_ids=True)
-
-    #     # Step 2: Assign edge types using the original edge IDs stored in subgraph.edata[dgl.EID]
-    #     subgraph.edata["type"] = self.graph.edata["type"][subgraph.edata[dgl.EID]]
-
-    #     # Step 3: Assign edge labels, ensuring the tensor is on the same device as the subgraph
-    #     subgraph.edata["label"] = torch.full(
-    #         (subgraph.number_of_edges(),),
-    #         r_label,
-    #         dtype=torch.long,
-    #         device=subgraph.device,
-    #     )
-
-    #     # Step 4: Ensure that the subgraph has at least one edge between the root nodes with the specified relation
-    #     # Assumption: The first two nodes in `nodes` are the root nodes and correspond to subgraph nodes 0 and 1
-    #     if len(nodes) < 2:
-    #         raise ValueError(
-    #             "The `nodes` list must contain at least two nodes representing the roots."
-    #         )
-
-    #     root_subgraph_nodes = [0, 1]  # Assuming nodes[0] and nodes[1] are the roots
-
-    #     # Verify that the subgraph has nodes 0 and 1
-    #     if subgraph.number_of_nodes() < 2:
-    #         raise ValueError(
-    #             "Subgraph must contain at least two nodes for root relations."
-    #         )
-
-    #     # Check if an edge exists between root nodes (0 and 1)
-    #     if subgraph.has_edges_between(root_subgraph_nodes[0], root_subgraph_nodes[1]):
-    #         # Retrieve all edge IDs between root nodes
-    #         edges_btw_roots = subgraph.edge_ids(
-    #             root_subgraph_nodes[0], root_subgraph_nodes[1]
-    #         )
-
-    #         # Check if any of these edges have the specified relation label
-    #         rel_link = (subgraph.edata["type"][edges_btw_roots] == r_label).nonzero(
-    #             as_tuple=True
-    #         )[0]
-    #     else:
-    #         rel_link = torch.tensor([], dtype=torch.long, device=subgraph.device)
-
-    #     # If no such edge exists, add one and assign its type and label
-    #     if rel_link.numel() == 0:
-    #         # Add a new edge from node 0 to node 1
-    #         subgraph = dgl.add_edges(
-    #             subgraph,
-    #             torch.tensor([root_subgraph_nodes[0]], device=subgraph.device),
-    #             torch.tensor([root_subgraph_nodes[1]], device=subgraph.device),
-    #         )
-
-    #         # Assign the relation label to the new edge
-    #         # The new edge is the last edge in the edge list
-    #         new_edge_id = subgraph.number_of_edges() - 1
-    #         subgraph.edata["type"][new_edge_id] = r_label
-    #         subgraph.edata["label"][new_edge_id] = r_label
-
-    #     # Step 5: Map the IDs read by GraIL to the entity IDs as registered by the KGE embeddings
-    #     if self.kge_entity2id:
-    #         try:
-    #             kge_nodes = [self.kge_entity2id[self.id2entity[n]] for n in nodes]
-    #         except KeyError as e:
-    #             raise KeyError(
-    #                 f"Entity mapping failed for node {e.args[0]}. Check `id2entity` and `kge_entity2id` mappings."
-    #             )
-    #     else:
-    #         kge_nodes = None
-
-    #     # Step 6: Retrieve node features if available
-    #     if self.node_features is not None and kge_nodes is not None:
-    #         try:
-    #             n_feats = self.node_features[kge_nodes]
-    #         except IndexError as e:
-    #             raise IndexError(
-    #                 f"Node feature retrieval failed for node indices {kge_nodes}."
-    #             )
-    #     else:
-    #         n_feats = None
-
-    #     # Step 7: Prepare additional features using the updated subgraph
-    #     subgraph = self._prepare_features_new(subgraph, n_labels, n_feats)
-
-    #     return subgraph
-
     def _prepare_subgraphs(self, nodes, r_label, n_labels):
-        # Extract subgraph with the latest DGL API
-        subgraph = self.graph.subgraph(nodes)
+        """
+        Prepare a DGL subgraph from the given nodes, assign edge types and labels, and handle node features.
 
-        # Map edge types from the parent graph
-        subgraph.edata['type'] = self.graph.edata['type'][subgraph.edata[dgl.EID]]
+        Parameters:
+            nodes (list): List of node IDs in the subgraph (global node IDs).
+            r_label (int): Relation label to assign to edges.
+            n_labels (np.ndarray): Node labels (distance to u and v).
 
-        # Assign edge labels
-        subgraph.edata['label'] = torch.full_like(subgraph.edata['type'], r_label, dtype=torch.long)
+        Returns:
+            dgl.DGLGraph: The prepared subgraph with edge and node features.
+        """
+        # Step 1: Extract the subgraph using the DGL API
+        subgraph = dgl.node_subgraph(self.graph, nodes)
 
-        # Check and add missing edges between root nodes
+        # Step 2: Set edge features (edge type and edge label)
+        edge_types = self.graph.edata['type'][subgraph.edata[dgl.EID]]  # Get edge types from the parent graph
+        subgraph.edata['type'] = edge_types
+        subgraph.edata['label'] = torch.full_like(edge_types, r_label, dtype=torch.long)
+
+        # Step 3: Ensure there is an edge between the root nodes (node 0 and 1)
         try:
             edges_btw_roots = subgraph.edge_ids(0, 1)
-            rel_link = (subgraph.edata['type'][edges_btw_roots] == r_label).nonzero(as_tuple=False)
-            if rel_link.numel() == 0:
-                subgraph.add_edges(0, 1)
-                subgraph.edata['type'][-1] = torch.tensor(r_label, dtype=torch.long)
-                subgraph.edata['label'][-1] = torch.tensor(r_label, dtype=torch.long)
-        except dgl.DGLError:
-            # Handle case where no edge exists between root nodes
-            subgraph.add_edges(0, 1)
-            subgraph.edata['type'][-1] = torch.tensor(r_label, dtype=torch.long)
-            subgraph.edata['label'][-1] = torch.tensor(r_label, dtype=torch.long)
+            rel_link = (subgraph.edata['type'][edges_btw_roots] == r_label).nonzero(as_tuple=True)[0]
+        except:
+            rel_link = torch.tensor([])
 
-        # Map subgraph nodes to external IDs (e.g., KGE IDs)
-        kge_nodes = [self.kge_entity2id[self.id2entity[n.item()]] for n in subgraph.ndata[dgl.NID]] if self.kge_entity2id else None
+        if rel_link.nelement() == 0:  # No edge of type r_label exists between root nodes
+            subgraph.add_edges(0, 1, data={
+                'type': torch.tensor([r_label], dtype=torch.long),
+                'label': torch.tensor([r_label], dtype=torch.long)
+            })
 
-        # Prepare node features
-        n_feats = self.node_features[kge_nodes] if self.node_features is not None else None
-        subgraph = self._prepare_features_new(subgraph, n_labels, n_feats)
+        # Step 4: Map global node IDs to KGE embeddings if available
+        kge_nodes = [self.kge_entity2id[self.id2entity[n]] for n in nodes] if self.kge_entity2id else None
 
+        # Step 5: Prepare features using the _prepare_features_new function
+        node_features = self.node_features[kge_nodes] if self.node_features is not None else None
+        subgraph = self._prepare_features_new(subgraph, n_labels, node_features)
+        
         return subgraph
 
 
