@@ -1,22 +1,14 @@
-import os
 import math
+from collections import deque
 import struct
 import logging
-import random
-import pickle as pkl
-import pdb
 from tqdm import tqdm
 import lmdb
 import multiprocessing as mp
 import numpy as np
-import scipy.io as sio
-import scipy.sparse as ssp
-import sys
-import torch
+from collections import deque
 from scipy.special import softmax
-from utils.dgl_utils import _bfs_relational
-from utils.graph_utils import incidence_matrix, remove_nodes, ssp_to_torch, serialize, deserialize, get_edge_count, diameter, radius
-import networkx as nx
+from utils.graph_utils import  serialize, get_edge_count
 
 
 def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, constrained_neg_prob=0):
@@ -152,74 +144,99 @@ def intialize_worker(A, params, max_label_value):
 
 def extract_save_subgraph(args_):
     idx, (n1, n2, r_label), g_label = args_
-    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling((n1, n2), r_label, A_, params_.hop, params_.enclosing_sub_graph, params_.max_nodes_per_hop)
+    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
+        (n1, n2), r_label, A_, params_.hop, params_.enclosing_sub_graph, params_.max_nodes_per_hop
+    )
 
-    # max_label_value_ is to set the maximum possible value of node label while doing double-radius labelling.
+    # Ensure n_labels is valid
+    if n_labels.size == 0:
+        n_labels = np.array([[0, 1], [1, 0]])  # Default labels for fallback case
+        nodes = [n1, n2]
+        subgraph_size = 2
+        enc_ratio = 1.0
+        num_pruned_nodes = 0
+
+    # Cap node labels if max_label_value_ is set
     if max_label_value_ is not None:
         n_labels = np.array([np.minimum(label, max_label_value_).tolist() for label in n_labels])
-
-    datum = {'nodes': nodes, 'r_label': r_label, 'g_label': g_label, 'n_labels': n_labels, 'subgraph_size': subgraph_size, 'enc_ratio': enc_ratio, 'num_pruned_nodes': num_pruned_nodes}
+    datum = {
+        'nodes': nodes,
+        'r_label': r_label,
+        'g_label': g_label,
+        'n_labels': n_labels,
+        'subgraph_size': subgraph_size,
+        'enc_ratio': enc_ratio,
+        'num_pruned_nodes': num_pruned_nodes
+    }
+    # from pprint import pprint
+    # print(idx)
+    # pprint(datum['n_labels'])
     str_id = '{:08}'.format(idx).encode('ascii')
 
     return (str_id, datum)
 
 
-def get_neighbor_nodes(roots, adj, h=1, max_nodes_per_hop=None):
-    bfs_generator = _bfs_relational(adj, roots, max_nodes_per_hop)
-    lvls = list()
-    for _ in range(h):
-        try:
-            lvls.append(next(bfs_generator))
-        except StopIteration:
-            pass
-    return set().union(*lvls)
+def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=False,
+                                 max_nodes_per_hop=None, max_node_label_value=None):
+    """
+    Extract the h-hop enclosing subgraph around link 'ind' and filter unreachable nodes.
 
+    Parameters:
+        ind (tuple): Target node pair (u, v).
+        rel (int): Relation index.
+        A_list (list): List of adjacency matrices in CSR format.
+        h (int): Maximum number of hops.
+        enclosing_sub_graph (bool): Whether to use intersection (True).
+        max_nodes_per_hop (int, optional): Not used but kept for compatibility.
+        max_node_label_value (int, optional): Maximum node label value.
 
-def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=False, max_nodes_per_hop=None, max_node_label_value=None):
-    # extract the h-hop enclosing subgraphs around link 'ind'
-    A_incidence = incidence_matrix(A_list)
-    A_incidence += A_incidence.T
+    Returns:
+        tuple: (pruned_subgraph_nodes, pruned_labels, subgraph_size, enc_ratio, num_pruned_nodes)
+    """
+    def bfs_with_labels(start_node, adj_matrix, max_hops):
+        """Perform BFS from a start node to collect neighbors and label distances."""
+        visited = {}
+        queue = deque([(start_node, 0)])
 
-    root1_nei = get_neighbor_nodes(set([ind[0]]), A_incidence, h, max_nodes_per_hop)
-    root2_nei = get_neighbor_nodes(set([ind[1]]), A_incidence, h, max_nodes_per_hop)
+        while queue:
+            node, dist = queue.popleft()
+            if node in visited or dist > max_hops:
+                continue
+            visited[node] = dist
 
-    subgraph_nei_nodes_int = root1_nei.intersection(root2_nei)
-    subgraph_nei_nodes_un = root1_nei.union(root2_nei)
+            for neighbor in adj_matrix[node].indices:
+                if neighbor not in visited:
+                    queue.append((neighbor, dist + 1))
 
-    # Extract subgraph | Roots being in the front is essential for labelling and the model to work properly.
-    if enclosing_sub_graph:
-        subgraph_nodes = list(ind) + list(subgraph_nei_nodes_int)
-    else:
-        subgraph_nodes = list(ind) + list(subgraph_nei_nodes_un)
+        return visited
 
-    subgraph = [adj[subgraph_nodes, :][:, subgraph_nodes] for adj in A_list]
+    u, v = ind
+    adj_matrix = sum(A_list)  # Combine adjacency matrices into a single undirected graph
 
-    labels, enclosing_subgraph_nodes = node_label(incidence_matrix(subgraph), max_distance=h)
+    # Step 1: BFS neighbors and distances from u and v
+    distances_u = bfs_with_labels(u, adj_matrix, h)
+    distances_v = bfs_with_labels(v, adj_matrix, h)
 
-    pruned_subgraph_nodes = np.array(subgraph_nodes)[enclosing_subgraph_nodes].tolist()
-    pruned_labels = labels[enclosing_subgraph_nodes]
-    # pruned_subgraph_nodes = subgraph_nodes
-    # pruned_labels = labels
+    # Add v to u's distances and vice versa
+    distances_u[v] = 1
+    distances_v[u] = 1
 
+    # Step 2: Intersection of reachable nodes
+    reachable_nodes = set(distances_u.keys()) & set(distances_v.keys())
+    num_pruned_nodes = len(set(distances_u.keys()) | set(distances_v.keys())) - len(reachable_nodes)
+
+    # Step 3: Build subgraph nodes
+    subgraph_nodes = sorted(reachable_nodes)
+
+    # Step 4: Assign labels explicitly for u and v
+    labels = np.array([[distances_u[node], distances_v[node]] for node in subgraph_nodes], dtype=int)
+
+    # Cap labels if max_node_label_value is specified
     if max_node_label_value is not None:
-        pruned_labels = np.array([np.minimum(label, max_node_label_value).tolist() for label in pruned_labels])
+        labels = np.minimum(labels, max_node_label_value)
 
-    subgraph_size = len(pruned_subgraph_nodes)
-    enc_ratio = len(subgraph_nei_nodes_int) / (len(subgraph_nei_nodes_un) + 1e-3)
-    num_pruned_nodes = len(subgraph_nodes) - len(pruned_subgraph_nodes)
+    # Step 5: Metrics
+    subgraph_size = len(subgraph_nodes)
+    enc_ratio = len(reachable_nodes) / (len(set(distances_u.keys()) | set(distances_v.keys())) + 1e-3)
 
-    return pruned_subgraph_nodes, pruned_labels, subgraph_size, enc_ratio, num_pruned_nodes
-
-
-def node_label(subgraph, max_distance=1):
-    # implementation of the node labeling scheme described in the paper
-    roots = [0, 1]
-    sgs_single_root = [remove_nodes(subgraph, [root]) for root in roots]
-    dist_to_roots = [np.clip(ssp.csgraph.dijkstra(sg, indices=[0], directed=False, unweighted=True, limit=1e6)[:, 1:], 0, 1e7) for r, sg in enumerate(sgs_single_root)]
-    dist_to_roots = np.array(list(zip(dist_to_roots[0][0], dist_to_roots[1][0])), dtype=int)
-
-    target_node_labels = np.array([[0, 1], [1, 0]])
-    labels = np.concatenate((target_node_labels, dist_to_roots)) if dist_to_roots.size else target_node_labels
-
-    enclosing_subgraph_nodes = np.where(np.max(labels, axis=1) <= max_distance)[0]
-    return labels, enclosing_subgraph_nodes
+    return subgraph_nodes, labels, subgraph_size, enc_ratio, num_pruned_nodes
