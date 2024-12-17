@@ -317,7 +317,7 @@ class SubgraphDataset(Dataset):
         # Step 5: Prepare features using the _prepare_features_new function
         node_features = self.node_features[kge_nodes] if self.node_features is not None else None
         subgraph = self._prepare_features_new(subgraph, n_labels, node_features)
-
+        
         return subgraph
 
 
