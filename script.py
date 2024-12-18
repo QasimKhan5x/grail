@@ -1,4 +1,4 @@
-folder = "data/DBpedia"
+folder = "data/YAGO"
 
 # Load entity2id and relation2id mappings
 def load_mapping(file_path):
@@ -31,6 +31,9 @@ for file in ["train", "valid", "test"]:
 
         # Skip the first line and process the rest
         for line in lines[1:]:
+            if file == "test":
+                # test file is tab-separated for the first column
+                line = line.split("\t")[1]
             # Split the line into parts (assuming whitespace-separated values)
             parts = line.strip().split()
 
