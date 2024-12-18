@@ -4,6 +4,7 @@ tmp.txt
 experiments/
 data/
 logs/
+script.py
 
 #Saved and downloaded data files
 *.nt.gz
