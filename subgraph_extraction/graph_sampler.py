@@ -198,9 +198,15 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     Extract and save a subgraph for a given edge.
     """
     idx, (n1, n2, r_label), g_label = args_
-    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
-        (n1, n2), r_label, A, params.hop, params.enclosing_sub_graph, params.max_nodes_per_hop
-    )
+    hop = 1
+    subgraph_size = 0
+    nodes, n_labels, enc_ratio, num_pruned_nodes = [], [], 0, 0
+
+    while subgraph_size < 100 and hop <= params.hop:
+        nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
+            (n1, n2), r_label, A, hop, params.enclosing_sub_graph, params.max_nodes_per_hop
+        )
+        hop += 1
 
     # Ensure n_labels is valid
     if n_labels.size == 0:
