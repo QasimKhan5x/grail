@@ -130,7 +130,6 @@ def process_files(file_paths: dict, saved_relation2id: dict = None):
 
     id2entity = {v: k for k, v in entity2id.items()}
     id2relation = {v: k for k, v in relation2id.items()}
-    print("num triplets", len(triplets["train"]))
     adj_list = build_adjacency_list(triplets["train"], len(relation2id), len(entity2id))
 
     return adj_list, triplets, entity2id, relation2id, id2entity, id2relation
