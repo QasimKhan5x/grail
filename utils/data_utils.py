@@ -91,9 +91,9 @@ def build_adjacency_list(
     adj_list = []
     for relation_id in range(relation_count):
         # Find all triplets corresponding to the current relation
-        indices = np.argwhere(train_triplets[:, 2] == relation_id)
-        rows = train_triplets[:, 0][indices].squeeze()
-        cols = train_triplets[:, 1][indices].squeeze()
+        indices = np.argwhere(train_triplets[:, 2] == relation_id).flatten()
+        rows = train_triplets[:, 0][indices]
+        cols = train_triplets[:, 1][indices]
         data = np.ones(len(indices), dtype=np.uint8)
 
         # Create the adjacency matrix in CSR format
@@ -103,6 +103,7 @@ def build_adjacency_list(
         adj_list.append(adj_matrix)
 
     return adj_list
+
 
 
 def process_files(file_paths: dict, saved_relation2id: dict = None):
@@ -118,7 +119,6 @@ def process_files(file_paths: dict, saved_relation2id: dict = None):
     """
     entity2id = {}
     relation2id = saved_relation2id if saved_relation2id else {}
-
     triplets = {}
     for file_type, file_path in file_paths.items():
         if not os.path.exists(file_path):
@@ -130,7 +130,7 @@ def process_files(file_paths: dict, saved_relation2id: dict = None):
 
     id2entity = {v: k for k, v in entity2id.items()}
     id2relation = {v: k for k, v in relation2id.items()}
-
+    print("num triplets", len(triplets["train"]))
     adj_list = build_adjacency_list(triplets["train"], len(relation2id), len(entity2id))
 
     return adj_list, triplets, entity2id, relation2id, id2entity, id2relation
