@@ -17,7 +17,21 @@ from managers.trainer import Trainer
 from warnings import simplefilter
 
 
+def seed_everything(seed: int):
+    import random, os
+    import numpy as np
+    import torch
+    
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
+seed_everything(42)
+
 def main(params):
+    
     simplefilter(action='ignore', category=UserWarning)
     simplefilter(action='ignore', category=SparseEfficiencyWarning)
 
@@ -39,6 +53,7 @@ def main(params):
                             num_neg_samples_per_link=params.num_neg_samples_per_link,
                             use_kge_embeddings=params.use_kge_embeddings, dataset=params.dataset,
                             kge_model=params.kge_model, file_name=params.valid_file)
+
     params.num_rels = train.num_rels
     params.aug_num_rels = train.aug_num_rels
     params.inp_dim = train.n_feat_dim
@@ -157,7 +172,7 @@ if __name__ == '__main__':
     params = parser.parse_args()
     initialize_experiment(params, __file__)
 
-    params.data_dir = "/gpfs/workdir/yutaoc/grail"
+    params.data_dir = "."
 
     params.file_paths = {
         'train': os.path.join(params.data_dir, 'data/{}/{}.txt'.format(params.dataset, params.train_file)),
