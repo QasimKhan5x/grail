@@ -314,14 +314,14 @@ class SubgraphDataset(Dataset):
         # Step 4: Map global node IDs to KGE embeddings if available
         kge_nodes = [self.kge_entity2id[self.id2entity[n]] for n in nodes] if self.kge_entity2id else None
 
-        # Step 5: Prepare features using the _prepare_features_new function
+        # Step 5: Prepare features using the prepare_features function
         node_features = self.node_features[kge_nodes] if self.node_features is not None else None
-        subgraph = self._prepare_features_new(subgraph, n_labels, node_features)
+        subgraph = self.prepare_features(subgraph, n_labels, node_features)
         
         return subgraph
 
 
-    def _prepare_features_new(self, subgraph, n_labels, n_feats=None):
+    def prepare_features(self, subgraph, n_labels, n_feats=None):
         # One hot encode the node label feature and concat to node features
         n_nodes = subgraph.number_of_nodes()
         label_feats = np.zeros(
@@ -350,20 +350,4 @@ class SubgraphDataset(Dataset):
         subgraph.ndata["id"] = torch.FloatTensor(n_ids)
 
         # self.n_feat_dim is already set in __init__, no need to set here
-        return subgraph
-
-    # If you have _prepare_features, you can keep it or remove it based on your usage
-    def _prepare_features(self, subgraph, n_labels, n_feats=None):
-        # One hot encode the node label feature and concat to node features
-        n_nodes = subgraph.number_of_nodes()
-        label_feats = np.zeros((n_nodes, self.max_n_label[0] + 1))
-        label_feats[np.arange(n_nodes), n_labels] = 1
-        label_feats[np.arange(n_nodes), self.max_n_label[0] + 1 + n_labels[:, 1]] = 1
-        n_feats = (
-            np.concatenate((label_feats, n_feats), axis=1) if n_feats else label_feats
-        )
-        subgraph.ndata["feat"] = torch.FloatTensor(n_feats)
-        self.n_feat_dim = n_feats.shape[
-            1
-        ]  # Find cleaner way to do this -- i.e. set the n_feat_dim
         return subgraph
