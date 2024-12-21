@@ -1,5 +1,5 @@
 import os
-
+import shutil
 import argparse
 import logging
 import torch
@@ -23,9 +23,9 @@ def main(params):
 
     params.db_path = f'{params.data_dir}/data/{params.dataset}/subgraphs_en_{params.enclosing_sub_graph}_neg_{params.num_neg_samples_per_link}_hop_{params.hop}'
 
-    # import shutil
-    # if os.path.isdir(params.db_path):
-    #     shutil.rmtree(params.db_path)
+    
+    if params.preprocess and os.path.isdir(params.db_path):
+        shutil.rmtree(params.db_path)
     if not os.path.isdir(params.db_path):
         generate_subgraph_datasets(params)
 
@@ -39,7 +39,6 @@ def main(params):
                             num_neg_samples_per_link=params.num_neg_samples_per_link,
                             use_kge_embeddings=params.use_kge_embeddings, dataset=params.dataset,
                             kge_model=params.kge_model, file_name=params.valid_file)
-
     params.num_rels = train.num_rels
     params.aug_num_rels = train.aug_num_rels
     params.inp_dim = train.n_feat_dim
@@ -82,6 +81,8 @@ if __name__ == '__main__':
                         help="Name of file containing training triplets")
     parser.add_argument("--valid_file", "-vf", type=str, default="valid",
                         help="Name of file containing validation triplets")
+    parser.add_argument('--preprocess', action='store_true',
+                        help='Recreate preprocessed subgraphs?')
 
     # Training regime params
     parser.add_argument("--num_epochs", "-ne", type=int, default=100,
@@ -167,7 +168,7 @@ if __name__ == '__main__':
         params.device = torch.device('cuda:%d' % params.gpu)
     else:
         params.device = torch.device('cpu')
-    print("Training via", params.device)
+
     params.collate_fn = collate_dgl
     params.move_batch_to_device = move_batch_to_device_dgl
 
