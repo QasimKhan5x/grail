@@ -198,15 +198,18 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     Extract and save a subgraph for a given edge.
     """
     idx, (n1, n2, r_label), g_label = args_
-    hop = 1
-    subgraph_size = 0
-    nodes, n_labels, enc_ratio, num_pruned_nodes = [], [], 0, 0
+    nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
+        (n1, n2), r_label, A, params.hop, params.enclosing_sub_graph, params.max_nodes_per_hop
+    )
+    # hop = 1
+    # subgraph_size = 0
+    # nodes, n_labels, enc_ratio, num_pruned_nodes = [], [], 0, 0
 
-    while subgraph_size < 100 and hop <= params.hop:
-        nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
-            (n1, n2), r_label, A, hop, params.enclosing_sub_graph, params.max_nodes_per_hop
-        )
-        hop += 1
+    # while subgraph_size < 100 and hop <= params.hop:
+    #     nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
+    #         (n1, n2), r_label, A, hop, params.enclosing_sub_graph, params.max_nodes_per_hop
+    #     )
+    #     hop += 1
 
     # Ensure n_labels is valid
     if n_labels.size == 0:
@@ -286,9 +289,9 @@ def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=Fals
 
     # Step 1: BFS neighbors and distances from u and v
     distances_u, distances_v = bidirectional_bfs(u, v, adj_matrix, h)
-    # Add v to u's distances and vice versa
-    distances_u[v] = 1
-    distances_v[u] = 1
+    # distance between u and v is 1 (0 if both are the same)
+    distances_u[v] = int(u != v)
+    distances_v[u] = int(u != v)
 
     # Step 2: Intersection of reachable nodes
     reachable_nodes = set(distances_u.keys()) & set(distances_v.keys())
@@ -299,7 +302,6 @@ def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=Fals
 
     # Step 4: Assign labels explicitly for u and v
     labels = np.array([[distances_u[node], distances_v[node]] for node in subgraph_nodes], dtype=int)
-
     # Cap labels if max_node_label_value is specified
     if max_node_label_value is not None:
         labels = np.minimum(labels, max_node_label_value)

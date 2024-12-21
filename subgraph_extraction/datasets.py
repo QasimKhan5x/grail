@@ -340,8 +340,13 @@ class SubgraphDataset(Dataset):
         head_id = np.argwhere([label[0] == 0 and label[1] == 1 for label in n_labels]).flatten()
         tail_id = np.argwhere([label[0] == 1 and label[1] == 0 for label in n_labels]).flatten()
         n_ids = np.zeros(n_nodes)
-        n_ids[head_id] = 1  # head
-        n_ids[tail_id] = 2  # tail
+        # If head_id and tail_id are empty, that means head == tail
+        if head_id.size == 0 and tail_id.size == 0:
+            head_id = np.argwhere([label[0] == 0 and label[1] == 0 for label in n_labels]).flatten()
+            n_ids[head_id] = 1  
+        else:
+            n_ids[head_id] = 1  
+            n_ids[tail_id] = 2 
         subgraph.ndata["id"] = torch.FloatTensor(n_ids)
 
         # self.n_feat_dim is already set in __init__, no need to set here

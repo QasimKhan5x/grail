@@ -53,7 +53,6 @@ class Trainer():
             shuffle=True,
             num_workers=self.params.num_workers,
             collate_fn=self.params.collate_fn,
-            persistent_workers=True 
         )
         self.graph_classifier.train()
         model_params = list(self.graph_classifier.parameters())
@@ -75,7 +74,6 @@ class Trainer():
                 torch.ones(batch_size, device=self.params.device)
             )
 
-            # print(score_pos, score_neg, loss)
             loss.backward()
             self.optimizer.step()
             self.updates_counter += 1
@@ -117,22 +115,6 @@ class Trainer():
             loss, auc, auc_pr, weight_norm = self.train_epoch()
             time_elapsed = time.time() - time_start
             logging.info(f'Epoch {epoch} with loss: {loss}, training auc: {auc}, training auc_pr: {auc_pr}, best validation AUC: {self.best_metric}, weight_norm: {weight_norm} in {time_elapsed}')
-
-            # if self.valid_evaluator and epoch % self.params.eval_every == 0:
-            #     result = self.valid_evaluator.eval()
-            #     logging.info('\nPerformance:' + str(result))
-            
-            #     if result['auc'] >= self.best_metric:
-            #         self.save_classifier()
-            #         self.best_metric = result['auc']
-            #         self.not_improved_count = 0
-
-            #     else:
-            #         self.not_improved_count += 1
-            #         if self.not_improved_count > self.params.early_stop:
-            #             logging.info(f"Validation performance didn\'t improve for {self.params.early_stop} epochs. Training stops.")
-            #             break
-            #     self.last_metric = result['auc']
 
             if epoch % self.params.save_every == 0:
                 torch.save(self.graph_classifier, os.path.join(self.params.exp_dir, 'graph_classifier_chk.pth'))
