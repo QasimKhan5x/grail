@@ -792,7 +792,7 @@ if __name__ == "__main__":
         "--experiment_name",
         "-e",
         type=str,
-        default="fb_v2_margin_loss",
+        default="default",
         help="Experiment name. Log file with this name will be created",
     )
     parser.add_argument(
