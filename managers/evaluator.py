@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import torch
-import pdb
+from tqdm import tqdm
 from sklearn import metrics
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -22,7 +22,7 @@ class Evaluator():
 
         self.graph_classifier.eval()
         with torch.no_grad():
-            for b_idx, batch in enumerate(dataloader):
+            for b_idx, batch in enumerate(tqdm(dataloader, desc='Evaluating')):
 
                 data_pos, targets_pos, data_neg, targets_neg = self.params.move_batch_to_device(batch, self.params.device)
                 # print([self.data.id2relation[r.item()] for r in data_pos[1]])
@@ -39,6 +39,12 @@ class Evaluator():
         # acc = metrics.accuracy_score(labels, preds)
         auc = metrics.roc_auc_score(pos_labels + neg_labels, pos_scores + neg_scores)
         auc_pr = metrics.average_precision_score(pos_labels + neg_labels, pos_scores + neg_scores)
+        # Threshold for classification
+        threshold = 0.5
+        y_pred = [int(score >= threshold) for score in pos_scores + neg_scores]
+        report = metrics.classification_report(pos_labels + neg_labels, y_pred, target_names=['Negative', 'Positive'])
+
+        print("Validation Classification Report: \n", report)
 
         if save:
             pos_test_triplets_path = os.path.join(self.params.main_dir, 'data/{}/{}.txt'.format(self.params.dataset, self.data.file_name))

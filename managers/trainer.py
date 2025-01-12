@@ -56,7 +56,7 @@ class Trainer():
         )
         self.graph_classifier.train()
         model_params = list(self.graph_classifier.parameters())
-        for b_idx, batch in enumerate(tqdm(dataloader)):
+        for b_idx, batch in enumerate(tqdm(dataloader, desc='Training')):
             data_pos, targets_pos, data_neg, targets_neg = self.params.move_batch_to_device(batch, self.params.device)
             self.optimizer.zero_grad()
             score_pos = self.graph_classifier(data_pos)
@@ -82,6 +82,7 @@ class Trainer():
                 all_scores += score_pos.squeeze().detach().cpu().tolist() + score_neg.squeeze().detach().cpu().tolist()
                 all_labels += targets_pos.tolist() + targets_neg.tolist()
                 total_loss += loss
+                
 
             if self.valid_evaluator and self.params.eval_every_iter and self.updates_counter % self.params.eval_every_iter == 0:
                 tic = time.time()
@@ -104,6 +105,9 @@ class Trainer():
         auc_pr = metrics.average_precision_score(all_labels, all_scores)
 
         weight_norm = sum(map(lambda x: torch.norm(x), model_params))
+        all_preds = [int(score >= 0) for score in all_scores]
+        classification_report = metrics.classification_report(all_labels, all_preds)
+        logging.info(f'Training Classification report: \n{classification_report}')
 
         return total_loss, auc, auc_pr, weight_norm
 
