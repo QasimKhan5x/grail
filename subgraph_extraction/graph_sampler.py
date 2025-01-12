@@ -282,10 +282,10 @@ def subgraph_extraction_labeling(ind, rel, A_list, h=1, enclosing_sub_graph=Fals
 
     u, v = ind
     u, v = ind
-    adj_matrix = sum(A_list)  # Combine adjacency matrices into a single undirected graph
-
-    # (optimization) Use only the specific adjacency matrix for the given relation
-    # adj_matrix = A_list[rel]
+    # Combine adjacency lists into a single matrix
+    adj_matrix = sum(A_list)  
+    # Graph is undirected
+    adj_matrix = adj_matrix + adj_matrix.T
 
     # Step 1: BFS neighbors and distances from u and v
     distances_u, distances_v = bidirectional_bfs(u, v, adj_matrix, h)
