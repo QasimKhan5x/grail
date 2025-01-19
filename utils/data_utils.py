@@ -47,7 +47,9 @@ def parse_triplets(
             if not line.strip():
                 continue
             subject, relation, obj = line.split()
-
+            # ignore self-loops
+            if subject == obj:
+                continue
             # Update entity mappings
             if subject not in entity2id:
                 entity2id[subject] = entity_counter
@@ -131,7 +133,7 @@ def process_files(file_paths: dict, saved_relation2id: dict = None):
     id2entity = {v: k for k, v in entity2id.items()}
     id2relation = {v: k for k, v in relation2id.items()}
     adj_list = build_adjacency_list(triplets["train"], len(relation2id), len(entity2id))
-
+    
     return adj_list, triplets, entity2id, relation2id, id2entity, id2relation
 
 

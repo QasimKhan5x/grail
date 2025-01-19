@@ -8,36 +8,13 @@ from scipy.sparse import issparse
 import multiprocessing as mp
 import scipy.sparse as ssp
 from tqdm import tqdm
-import networkx as nx
 import torch
 import numpy as np
 import dgl
+import matplotlib.pyplot as plt
 
 from subgraph_extraction.graph_sampler import subgraph_extraction_labeling
-
-
-def ssp_multigraph_to_dgl(graph, n_feats=None):
-    """
-    Converting ssp multigraph (i.e. list of adjs) to dgl multigraph.
-    """
-
-    g_nx = nx.MultiDiGraph()
-    g_nx.add_nodes_from(list(range(graph[0].shape[0])))
-    # Add edges
-    for rel, adj in enumerate(graph):
-        # Convert adjacency matrix to tuples for nx0
-        nx_triplets = []
-        for src, dst in list(zip(adj.tocoo().row, adj.tocoo().col)):
-            nx_triplets.append((src, dst, {"type": rel}))
-        g_nx.add_edges_from(nx_triplets)
-
-    # make dgl graph
-    g_dgl = dgl.from_networkx(g_nx, edge_attrs=["type"])
-    # add node features
-    if n_feats is not None:
-        g_dgl.ndata["feat"] = torch.tensor(n_feats)
-
-    return g_dgl
+from utils.graph_utils import ssp_multigraph_to_dgl
 
 
 def process_files(files, saved_relation2id, add_traspose_rels):
@@ -150,42 +127,16 @@ def get_neg_samples_replacing_head_tail(test_links, adj_list, num_samples=50):
     processed_adj_list = []
     for idx, rel_adj in enumerate(adj_list):
         if isinstance(rel_adj, np.ndarray):
-            if rel_adj.ndim != 2:
-                raise ValueError(
-                    f"Adjacency matrix for relation {idx} is not 2-dimensional."
-                )
             processed_adj_list.append(rel_adj)
         else:
             # Attempt to convert sparse matrices to dense
-            try:
-                dense_adj = rel_adj.toarray()
-                if dense_adj.ndim != 2:
-                    raise ValueError(
-                        f"Adjacency matrix for relation {idx} could not be converted to 2D."
-                    )
-                processed_adj_list.append(dense_adj)
-            except AttributeError:
-                raise TypeError(
-                    f"Adjacency matrix for relation {idx} is neither a NumPy array nor a sparse matrix."
-                )
+            dense_adj = rel_adj.toarray()
+            processed_adj_list.append(dense_adj)
 
     # Stack adjacency matrices into a 3D NumPy array
-    try:
-        adj_stack = np.stack(processed_adj_list)  # Shape: (r, n, n)
-    except ValueError as e:
-        raise ValueError(f"Failed to stack adjacency matrices: {e}")
-
-    # Verify the shape of adj_stack
-    if adj_stack.ndim != 3:
-        raise ValueError(
-            f"Expected adj_stack to be 3-dimensional, but got shape {adj_stack.shape}"
-        )
+    adj_stack = np.stack(processed_adj_list)  # Shape: (r, n, n)
 
     r, n, n_check = adj_stack.shape
-    if n != n_check:
-        raise ValueError(
-            f"Adjacency matrices must be square. Found shape {adj_stack.shape}"
-        )
 
     # Extract heads, tails, and relations from test_links
     heads, tails, rels = test_links[:, 0], test_links[:, 1], test_links[:, 2]
@@ -195,12 +146,6 @@ def get_neg_samples_replacing_head_tail(test_links, adj_list, num_samples=50):
 
     for i in range(num_links):
         head, tail, rel = heads[i], tails[i], rels[i]
-
-        # Validate relation index
-        if rel < 0 or rel >= r:
-            raise IndexError(
-                f"Relation index {rel} out of bounds for adj_stack with {r} relations."
-            )
 
         # Initialize negative samples with the original triplet
         head_neg = [[head, tail, rel]]
@@ -409,38 +354,22 @@ def get_neg_samples_replacing_head_tail_from_ruleN(
 
     return neg_triplets
 
-
 def prepare_features(subgraph, n_labels, max_n_label, n_feats=None):
-    # One hot encode the node label feature and concat to node features
+    # One hot encode the node label feature and concat to n_featsure
     n_nodes = subgraph.number_of_nodes()
     label_feats = np.zeros((n_nodes, max_n_label[0] + 1 + max_n_label[1] + 1))
     label_feats[np.arange(n_nodes), n_labels[:, 0]] = 1
     label_feats[np.arange(n_nodes), max_n_label[0] + 1 + n_labels[:, 1]] = 1
 
-    n_feats = (
-        np.concatenate((label_feats, n_feats), axis=1)
-        if n_feats is not None
-        else label_feats
-    )
-    subgraph.ndata["feat"] = torch.FloatTensor(n_feats)
+    n_feats = np.concatenate((label_feats, n_feats), axis=1) if n_feats is not None else label_feats
+    subgraph.ndata['feat'] = torch.FloatTensor(n_feats)
 
-    head_id = np.argwhere(
-        [label[0] == 0 and label[1] == 1 for label in n_labels]
-    ).flatten()
-    tail_id = np.argwhere(
-        [label[0] == 1 and label[1] == 0 for label in n_labels]
-    ).flatten()
+    head_id = np.argwhere([label[0] == 0 and label[1] == 1 for label in n_labels])
+    tail_id = np.argwhere([label[0] == 1 and label[1] == 0 for label in n_labels])
     n_ids = np.zeros(n_nodes)
-    # If head_id and tail_id are empty, that means head == tail
-    if head_id.size == 0 and tail_id.size == 0:
-        head_id = np.argwhere(
-            [label[0] == 0 and label[1] == 0 for label in n_labels]
-        ).flatten()
-        n_ids[head_id] = 1
-    else:
-        n_ids[head_id] = 1
-        n_ids[tail_id] = 2
-    subgraph.ndata["id"] = torch.FloatTensor(n_ids)
+    n_ids[head_id] = 1  # head
+    n_ids[tail_id] = 2  # tail
+    subgraph.ndata['id'] = torch.FloatTensor(n_ids)
 
     return subgraph
 
@@ -473,17 +402,18 @@ def get_subgraphs(
     subgraphs = []
     r_labels = []
 
+    adj_matrix = sum(adj_list)
+    adj_matrix = adj_matrix + adj_matrix.T
+
     for link in all_links:
         head, tail, rel = link[0], link[1], link[2]
-
+        
         # Extract nodes and labels for the subgraph
         nodes, node_labels = subgraph_extraction_labeling(
-            (head, tail),
-            rel,
-            adj_list,
+            (head, tail), rel, adj_matrix,
             h=params_.hop,
             enclosing_sub_graph=params_.enclosing_sub_graph,
-            max_node_label_value=max_node_label_value,
+            max_node_label_value=max_node_label_value
         )[:2]
 
         # Create subgraph using the list of nodes
@@ -491,12 +421,12 @@ def get_subgraphs(
 
         # Assign 'type' and 'label' edge attributes based on parent edge IDs
         parent_eids = subgraph.edata[dgl.EID]
-        subgraph.edata["type"] = dgl_adj_list.edata["type"][parent_eids]
-        subgraph.edata["label"] = torch.full(
+        subgraph.edata['type'] = dgl_adj_list.edata['type'][parent_eids]
+        subgraph.edata['label'] = torch.full(
             (subgraph.number_of_edges(),),
             rel,
             dtype=torch.long,
-            device=subgraph.device,  # Ensure the tensor is on the same device as the graph
+            device=subgraph.device  # Ensure the tensor is on the same device as the graph
         )
 
         # Check if there is an edge between node 0 and node 1 with relation 'rel'
@@ -506,11 +436,7 @@ def get_subgraphs(
                     # Get edge IDs from node 0 to node 1
                     eids_between_roots = subgraph.edge_ids(0, 1, return_uv=False)
                     # Check if any of these edges have 'type' == rel
-                    rel_link = (
-                        (subgraph.edata["type"][eids_between_roots] == rel)
-                        .nonzero(as_tuple=False)
-                        .squeeze()
-                    )
+                    rel_link = (subgraph.edata['type'][eids_between_roots] == rel).nonzero(as_tuple=False).squeeze()
                 except KeyError:
                     # No valid edge exists
                     rel_link = torch.tensor([], device=subgraph.device)
@@ -524,14 +450,8 @@ def get_subgraphs(
                     subgraph,
                     [0],
                     [1],
-                    {
-                        "type": torch.tensor(
-                            [rel], dtype=torch.long, device=subgraph.device
-                        ),
-                        "label": torch.tensor(
-                            [rel], dtype=torch.long, device=subgraph.device
-                        ),
-                    },
+                    {'type': torch.tensor([rel], dtype=torch.long, device=subgraph.device),
+                     'label': torch.tensor([rel], dtype=torch.long, device=subgraph.device)}
                 )
 
         # Handle KGE nodes and features if applicable
@@ -549,9 +469,7 @@ def get_subgraphs(
             n_feats = None
 
         # Prepare node features using the provided function
-        subgraph = prepare_features(
-            subgraph, node_labels, max_node_label_value, n_feats
-        )
+        subgraph = prepare_features(subgraph, node_labels, max_node_label_value, n_feats)
 
         # Append the processed subgraph and its label
         subgraphs.append(subgraph)
@@ -559,12 +477,9 @@ def get_subgraphs(
 
     # Batch all subgraphs into a single graph
     batched_graph = dgl.batch(subgraphs)
-    num_nodes_per_graph = torch.tensor(
-        [subgraph.number_of_nodes() for subgraph in subgraphs]
-    )
     r_labels = torch.LongTensor(r_labels)
 
-    return batched_graph, num_nodes_per_graph, r_labels
+    return batched_graph, r_labels
 
 
 def save_to_file(neg_triplets, id2entity, id2relation, dataset):
@@ -711,9 +626,7 @@ def main(params):
 
     if params.mode == "sample":
         neg_triplets = get_neg_samples_replacing_head_tail(triplets["links"], adj_list)
-        save_to_file(
-            neg_triplets, id2entity, id2relation, params.dataset
-        )  # Passed dataset
+        save_to_file(neg_triplets, id2entity, id2relation, params.dataset)
     elif params.mode == "all":
         neg_triplets = get_neg_samples_replacing_head_tail_all(
             triplets["links"], adj_list
@@ -779,6 +692,29 @@ def main(params):
     logger.info(
         f"MRR | Hits@1 | Hits@5 | Hits@10 : {mrr} | {hits_1} | {hits_5} | {hits_10}"
     )
+
+    # Initialize results for thresholds
+    thresholds = range(1, 51)
+    hits_at_thresholds = []
+
+    # Loop through thresholds and calculate hits
+    for threshold in thresholds:
+        hits_list = [x for x in ranks if x <= threshold]
+        hits_ratio = len(hits_list) / len(ranks)  # Calculate hit ratio
+        hits_at_thresholds.append(hits_ratio)
+
+    
+
+    # Plot results
+    plt.figure(figsize=(10, 6))
+    plt.plot(thresholds, hits_at_thresholds, marker="o", label="Hits@Threshold")
+    plt.axhline(y=mrr, color="r", linestyle="--", label=f"MRR={mrr:.4f}")
+    plt.title("Hits at Thresholds (1 to 49)")
+    plt.xlabel("Threshold")
+    plt.ylabel("Hits Ratio")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
 
 
 if __name__ == "__main__":

@@ -37,14 +37,37 @@ class Evaluator():
                 neg_labels += targets_neg.tolist()
 
         # acc = metrics.accuracy_score(labels, preds)
-        auc = metrics.roc_auc_score(pos_labels + neg_labels, pos_scores + neg_scores)
-        auc_pr = metrics.average_precision_score(pos_labels + neg_labels, pos_scores + neg_scores)
+        scores = np.array(pos_scores + neg_scores)
+        scores_prob = 1 / (1 + np.exp(-scores))
+        auc = metrics.roc_auc_score(pos_labels + neg_labels, scores_prob)
+        auc_pr = metrics.average_precision_score(pos_labels + neg_labels, scores_prob)
+
+        precision, recall, thresholds = metrics.precision_recall_curve(pos_labels + neg_labels, scores_prob)
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
+        best_threshold_index = np.argmax(f1_scores)
+        best_threshold = thresholds[best_threshold_index]
+        print("Best Threshold: ", best_threshold)
         # Threshold for classification
-        threshold = 0.5
-        y_pred = [int(score >= threshold) for score in pos_scores + neg_scores]
+        y_pred = (scores_prob >= best_threshold).astype(int)
         report = metrics.classification_report(pos_labels + neg_labels, y_pred, target_names=['Negative', 'Positive'])
 
         print("Validation Classification Report: \n", report)
+
+        # Combine the labels
+        all_labels = np.array(pos_labels + neg_labels)
+        # Identify positive examples
+        positive_indices = np.where(all_labels == 1)[0]  # Indices of positive labels
+        # Identify negative examples
+        negative_indices = np.where(all_labels == 0)[0]  # Indices of negative labels
+        wrongly_classified_positives = positive_indices[y_pred[positive_indices] != all_labels[positive_indices]]
+        wrongly_classified_negatives = negative_indices[y_pred[negative_indices] != all_labels[negative_indices]] - len(pos_labels)
+        # # Print the IDs (indices)
+        # print("IDs of wrongly classified positive examples:")
+        # print(wrongly_classified_positives.tolist())
+        # print("IDs of wrongly classified negative examples:")
+        # print(wrongly_classified_negatives.tolist())
+
+
 
         if save:
             pos_test_triplets_path = os.path.join(self.params.main_dir, 'data/{}/{}.txt'.format(self.params.dataset, self.data.file_name))

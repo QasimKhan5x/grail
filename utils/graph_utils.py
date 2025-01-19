@@ -85,22 +85,18 @@ def ssp_multigraph_to_dgl(graph, n_feats=None):
 def collate_dgl(samples):
     # The input `samples` is a list of pairs
     graphs_pos, g_labels_pos, r_labels_pos, graphs_negs, g_labels_negs, r_labels_negs = map(list, zip(*samples))
-    # get number of nodes in each graph
-    num_nodes_pos = torch.tensor([graph.number_of_nodes() for graph in graphs_pos])
     batched_graph_pos = dgl.batch(graphs_pos)
 
     graphs_neg = [item for sublist in graphs_negs for item in sublist]
-    num_nodes_neg = torch.tensor([graph.number_of_nodes() for graph in graphs_neg])
-
     g_labels_neg = [item for sublist in g_labels_negs for item in sublist]
     r_labels_neg = [item for sublist in r_labels_negs for item in sublist]
 
     batched_graph_neg = dgl.batch(graphs_neg)
-    return (batched_graph_pos, num_nodes_pos, r_labels_pos), g_labels_pos, (batched_graph_neg, num_nodes_neg, r_labels_neg), g_labels_neg
+    return (batched_graph_pos, r_labels_pos), g_labels_pos, (batched_graph_neg, r_labels_neg), g_labels_neg
 
 
 def move_batch_to_device_dgl(batch, device):
-    ((g_dgl_pos, num_nodes_pos, r_labels_pos), targets_pos, (g_dgl_neg, num_nodes_neg, r_labels_neg), targets_neg) = batch
+    ((g_dgl_pos, r_labels_pos), targets_pos, (g_dgl_neg, r_labels_neg), targets_neg) = batch
 
     targets_pos = list(map(int, targets_pos))
     targets_neg = list(map(int, targets_neg))
@@ -114,10 +110,7 @@ def move_batch_to_device_dgl(batch, device):
     g_dgl_pos = g_dgl_pos.to(device)
     g_dgl_neg = g_dgl_neg.to(device)
 
-    num_nodes_pos = num_nodes_pos.to(device)
-    num_nodes_neg = num_nodes_neg.to(device)
-
-    return ((g_dgl_pos, num_nodes_pos, r_labels_pos), targets_pos, (g_dgl_neg, num_nodes_neg, r_labels_neg), targets_neg)
+    return ((g_dgl_pos, r_labels_pos), targets_pos, (g_dgl_neg, r_labels_neg), targets_neg)
 
 
 def eccentricity(G):

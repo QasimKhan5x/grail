@@ -100,6 +100,10 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
     Returns:
         None: Writes results to LMDB.
     """
+    # Merge adjacency matrices and make undirected
+    A = sum(A)
+    A = A + A.T
+
     max_n_label = {"value": np.array([0, 0])}
     subgraph_sizes = []
     enc_ratios = []
@@ -322,37 +326,39 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     str_id = "{:08}".format(idx).encode("ascii")
     return str_id, datum
 
-
 def subgraph_extraction_labeling(
     ind,
     rel,
-    A_list,
+    full_adj,
     h=1,
     enclosing_sub_graph=False,
     max_nodes_per_hop=None,
     max_node_label_value=None,
 ):
     """
-    Extract the k-hop enclosing subgraph around link 'ind' (u, v), i.e.,
-    all nodes that occur on any path of length <= (k+1) between u and v.
+    Extract the k-hop enclosing subgraph around link 'ind' (u, v),
+    then label the nodes with Double Radius Node Labeling (DRNL).
 
     Parameters:
         ind (tuple): Target node pair (u, v).
-        rel (int): Relation index (unused here except for placeholders).
+        rel (int): Relation index (not used here, kept for compatibility).
         A_list (list): List of adjacency matrices in CSR format.
         h (int): 'k' in the problem statement — the maximum number of hops
                  we allow from u to v is (k+1).
-        enclosing_sub_graph (bool): Whether to use intersection (legacy, not used).
-        max_nodes_per_hop (int, optional): Not used but kept for compatibility.
-        max_node_label_value (int, optional): If set, caps the distance labels.
+        enclosing_sub_graph (bool): (Unused in BFS method; can remain for API).
+        max_nodes_per_hop (int): (Unused here, but kept for signature).
+        max_node_label_value (int): If set, caps the distance labels.
 
     Returns:
-        tuple: (pruned_subgraph_nodes, pruned_labels, subgraph_size, enc_ratio, num_pruned_nodes)
+        tuple:
+            pruned_subgraph_nodes (list[int]): Node IDs in the final subgraph,
+                                               in sorted order.
+            drnl_labels (np.ndarray): Array of shape (num_nodes, 2),
+                                      the DRNL labels (distances ignoring the other root).
+            subgraph_size (int): Number of nodes in final subgraph.
+            enc_ratio (float): Ratio of final subgraph size to BFS-union size (for logging).
+            num_pruned_nodes (int): How many nodes got pruned out from BFS union.
     """
-
-    # ---------------------------------
-    # 1) Define a BFS that records distances up to max_hops
-    # ---------------------------------
     def bfs_with_distances(start, adj_matrix, max_hops):
         """
         Standard BFS that tracks distances from 'start' up to 'max_hops'.
@@ -364,72 +370,141 @@ def subgraph_extraction_labeling(
             node, dist = queue.popleft()
             if node not in visited and dist <= max_hops:
                 visited[node] = dist
-                # Enqueue neighbors if within max_hops
                 for neighbor in adj_matrix[node].indices:
                     if neighbor not in visited:
                         queue.append((neighbor, dist + 1))
         return visited
 
-    # ---------------------------------
-    # 2) Preprocess the graph
-    # ---------------------------------
+    # 1) Get the source and target nodes
     u, v = ind
 
-    # Combine adjacency matrices
-    adj_matrix = sum(A_list)
-    adj_matrix = adj_matrix + adj_matrix.T  # ensure undirected
+    # 2) Get BFS distances up to h from u and from v
+    distances_u = bfs_with_distances(u, full_adj, h)
+    distances_v = bfs_with_distances(v, full_adj, h)
 
-    # Optionally remove self-loops if you want
-    # adj_matrix.setdiag(0)
-    # adj_matrix.eliminate_zeros()
-
-    # ---------------------------------
-    # 3) Get BFS distances from u and from v, up to h
-    # ---------------------------------
-    distances_u = bfs_with_distances(u, adj_matrix, h)
-    distances_v = bfs_with_distances(v, adj_matrix, h)
-    # distance between u and v is 1 (0 if both are the same)
-    distances_u[v] = int(u != v)
-    distances_v[u] = int(u != v)
-
-    # ---------------------------------
-    # 4) Determine which nodes lie on a path <= (k+1) edges from u to v
-    #    Condition: dist_u(x) + dist_v(x) <= (k+1)
-    # ---------------------------------
-    # Union of all nodes we encountered in BFS from either side
+    # 3) Union of BFS nodes
     union_nodes = set(distances_u.keys()) | set(distances_v.keys())
 
-    # Keep only those that
-    # 1. appear on a path of length <= k+1
-    # 2. are within h hops from u and v
+    # Keep only nodes x where dist_u(x) + dist_v(x) <= (h+1)
+    # and each distance <= h
     subgraph_nodes = []
     for x in union_nodes:
-        # if x not visited, treat as infinite
-        dist_u_x = distances_u.get(x, 1e9)  
-        dist_v_x = distances_v.get(x, 1e9)
-        if dist_u_x + dist_v_x <= (h + 1) and dist_u_x <= h and dist_v_x <= h:
+        du = distances_u.get(x, 1e9)
+        dv = distances_v.get(x, 1e9)
+        if du <= h and dv <= h and (du + dv) <= (h + 1):
             subgraph_nodes.append(x)
 
     subgraph_nodes = sorted(subgraph_nodes)
-
-    # Count how many we pruned
     num_pruned_nodes = len(union_nodes) - len(subgraph_nodes)
 
-    # ---------------------------------
-    # 5) Build label array: (dist_from_u, dist_from_v) for each node
-    # ---------------------------------
-    labels = np.array(
-        [(distances_u[node], distances_v[node]) for node in subgraph_nodes], dtype=int
-    )
+    # 4) Build sub-adjacency for these subgraph_nodes
+    #    We'll reindex them from 0..len(subgraph_nodes)-1
+    idx_map = {node_id: i for i, node_id in enumerate(subgraph_nodes)}
+    sub_n = len(subgraph_nodes)
+    # Extract the adjacency sub-matrix in CSR form
+    sub_adj = full_adj[subgraph_nodes, :][:, subgraph_nodes].tocsr()
 
-    # If capping labels is required:
+    # 5) DRNL labeling:
+    #    We'll remove v from adjacency, BFS from u in that 'reduced' graph,
+    #    then remove u, BFS from v.
+    #    dist_u_ignore_v[i] = BFS distance from subgraph index of u to i (with v removed).
+    #    dist_v_ignore_u[i] = BFS distance from subgraph index of v to i (with u removed).
+
+    # -----------------------------------------------------------
+    #  If u or v not in subgraph, force a minimal subgraph of {u, v}
+    # -----------------------------------------------------------
+    if u not in idx_map or v not in idx_map:
+        # Instead of returning an empty subgraph, we create a 2-node subgraph:
+        pruned_subgraph_nodes = [u, v]  # just these two
+        # DRNL labels: by convention, (0,1) for u, (1,0) for v
+        drnl_labels = np.array([[0, 1], [1, 0]], dtype=int)
+
+        subgraph_size = 2
+        enc_ratio = 1.0
+        num_pruned_nodes_total = 0
+
+        return pruned_subgraph_nodes, drnl_labels, subgraph_size, enc_ratio, num_pruned_nodes_total
+
+
+    u_idx = idx_map[u]
+    v_idx = idx_map[v]
+
+    def bfs_distances_ignoring(adj_csr, start_idx, ignore_idx):
+        """
+        Return array of BFS distances from start_idx in adjacency 'adj_csr',
+        after removing 'ignore_idx' (no edges from/to that node).
+        If unreachable, distance = large sentinel (999999).
+        """
+        n = adj_csr.shape[0]
+        visited = np.full(n, False, dtype=bool)
+        dist = np.full(n, 999999, dtype=int)
+
+        # We effectively "remove" ignore_idx by skipping edges from/to it.
+        # We'll just treat it as visited or no edges from it.
+        # Easiest hack: treat ignore_idx as visited from the start.
+        visited[ignore_idx] = True  # so we never traverse from or to 'ignore_idx'
+
+        # BFS
+        from collections import deque
+        queue = deque([start_idx])
+        dist[start_idx] = 0
+        visited[start_idx] = True
+
+        while queue:
+            curr = queue.popleft()
+            curr_dist = dist[curr]
+
+            # look at neighbors
+            row_start = adj_csr.indptr[curr]
+            row_end = adj_csr.indptr[curr+1]
+            neighbors = adj_csr.indices[row_start:row_end]
+
+            for nbr in neighbors:
+                if not visited[nbr]:
+                    visited[nbr] = True
+                    dist[nbr] = curr_dist + 1
+                    queue.append(nbr)
+        return dist
+
+    # Distances from u ignoring v:
+    dist_u_ignore_v = bfs_distances_ignoring(sub_adj, u_idx, v_idx)
+    # Distances from v ignoring u:
+    dist_v_ignore_u = bfs_distances_ignoring(sub_adj, v_idx, u_idx)
+
+    # Combine into a 2D label array:
+    drnl_labels = np.vstack([dist_u_ignore_v, dist_v_ignore_u]).T  # shape (num_nodes, 2)
+
+    # Special label for the roots:
+    # By many DRNL conventions, we set label(u) = (0,1), label(v) = (1,0)
+    drnl_labels[u_idx] = [0, 1]
+    drnl_labels[v_idx] = [1, 0]
+
+    # 6) Optional filter: keep only nodes with max distance <= h
+    #    (This enforces the "enclosing subgraph" of radius h in DRNL sense)
+    keep_mask = (drnl_labels.max(axis=1) <= h)
+    # If you want this "DRNL radius" filter, do:
+    pruned_indices = np.where(keep_mask)[0]
+    # Else, if you prefer to keep them all, just use:
+    # pruned_indices = np.arange(sub_n)
+
+    # 7) Apply the filter
+    pruned_subgraph_nodes = [subgraph_nodes[i] for i in pruned_indices]
+    drnl_labels = drnl_labels[pruned_indices]
+
+    # 8) Cap labels if max_node_label_value is set
     if max_node_label_value is not None:
-        labels = np.minimum(labels, max_node_label_value)
+        drnl_labels = np.minimum(drnl_labels, max_node_label_value)
 
-    # ---------------------------------
-    # 6) Metrics
-    # ---------------------------------
-    subgraph_size = len(subgraph_nodes)
-    enc_ratio = len(subgraph_nodes) / (len(union_nodes) + 1e-9)
+    # 9) Final metrics
+    subgraph_size = len(pruned_subgraph_nodes)
+    enc_ratio = subgraph_size / (len(subgraph_nodes) + 1e-9)
+    num_pruned_after_label = len(subgraph_nodes) - subgraph_size
+    num_pruned_nodes_total = num_pruned_nodes + num_pruned_after_label
 
-    return subgraph_nodes, labels, subgraph_size, enc_ratio, num_pruned_nodes
+    return (
+        pruned_subgraph_nodes,
+        drnl_labels,
+        subgraph_size,
+        enc_ratio,
+        num_pruned_nodes_total
+    )

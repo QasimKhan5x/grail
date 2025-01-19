@@ -2,6 +2,9 @@ import os
 import shutil
 import argparse
 import logging
+import random
+
+import numpy as np
 import torch
 from scipy.sparse import SparseEfficiencyWarning
 
@@ -16,11 +19,8 @@ from managers.trainer import Trainer
 
 from warnings import simplefilter
 
-
 def seed_everything(seed: int):
-    import random, os
-    import numpy as np
-    import torch
+    
     
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -37,7 +37,6 @@ def main(params):
 
     params.db_path = f'{params.data_dir}/data/{params.dataset}/subgraphs_en_{params.enclosing_sub_graph}_neg_{params.num_neg_samples_per_link}_hop_{params.hop}'
 
-    
     if params.preprocess and os.path.isdir(params.db_path):
         shutil.rmtree(params.db_path)
     if not os.path.isdir(params.db_path):
@@ -84,7 +83,7 @@ if __name__ == '__main__':
     # Experiment setup params
     parser.add_argument("--experiment_name", "-e", type=str, default="default",
                         help="A folder with this name would be created to dump saved models and log files")
-    parser.add_argument("--dataset", "-d", type=str,
+    parser.add_argument("--dataset", "-d", type=str, default="WN18RR",
                         help="Dataset string")
     parser.add_argument("--gpu", type=int, default=0,
                         help="Which GPU to use?")

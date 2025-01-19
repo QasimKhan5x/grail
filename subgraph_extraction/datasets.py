@@ -320,34 +320,22 @@ class SubgraphDataset(Dataset):
         
         return subgraph
 
-
     def prepare_features(self, subgraph, n_labels, n_feats=None):
-        # One hot encode the node label feature and concat to node features
+        # One hot encode the node label feature and concat to n_featsure
         n_nodes = subgraph.number_of_nodes()
-        label_feats = np.zeros(
-            (n_nodes, self.max_n_label[0] + 1 + self.max_n_label[1] + 1)
-        )
+        label_feats = np.zeros((n_nodes, self.max_n_label[0] + 1 + self.max_n_label[1] + 1))
         label_feats[np.arange(n_nodes), n_labels[:, 0]] = 1
         label_feats[np.arange(n_nodes), self.max_n_label[0] + 1 + n_labels[:, 1]] = 1
 
-        n_feats = (
-            np.concatenate((label_feats, n_feats), axis=1)
-            if n_feats is not None
-            else label_feats
-        )
-        subgraph.ndata["feat"] = torch.FloatTensor(n_feats)
+        n_feats = np.concatenate((label_feats, n_feats), axis=1) if n_feats is not None else label_feats
+        subgraph.ndata['feat'] = torch.FloatTensor(n_feats)
 
-        head_id = np.argwhere([label[0] == 0 and label[1] == 1 for label in n_labels]).flatten()
-        tail_id = np.argwhere([label[0] == 1 and label[1] == 0 for label in n_labels]).flatten()
+        head_id = np.argwhere([label[0] == 0 and label[1] == 1 for label in n_labels])
+        tail_id = np.argwhere([label[0] == 1 and label[1] == 0 for label in n_labels])
         n_ids = np.zeros(n_nodes)
-        # If head_id and tail_id are empty, that means head == tail
-        if head_id.size == 0 and tail_id.size == 0:
-            head_id = np.argwhere([label[0] == 0 and label[1] == 0 for label in n_labels]).flatten()
-            n_ids[head_id] = 1  
-        else:
-            n_ids[head_id] = 1  
-            n_ids[tail_id] = 2 
-        subgraph.ndata["id"] = torch.FloatTensor(n_ids)
+        n_ids[head_id] = 1  # head
+        n_ids[tail_id] = 2  # tail
+        subgraph.ndata['id'] = torch.FloatTensor(n_ids)
 
-        # self.n_feat_dim is already set in __init__, no need to set here
+        self.n_feat_dim = n_feats.shape[1]  # Find cleaner way to do this -- i.e. set the n_feat_dim
         return subgraph

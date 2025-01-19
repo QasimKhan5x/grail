@@ -24,36 +24,15 @@ class GraphClassifier(nn.Module):
             self.fc_layer = nn.Linear(self.params.num_gcn_layers * self.params.emb_dim + self.params.rel_emb_dim, 1)
 
     def forward(self, data):
-        g, num_nodes_per_graph, rel_labels = data
-        
-        head_ids = (g.ndata['id'] == 1).nonzero().squeeze(1)
-        tail_ids = (g.ndata['id'] == 2).nonzero().squeeze(1)
-        if len(head_ids) != len(tail_ids):
-            # graph_idx = torch.repeat_interleave(
-            #     torch.arange(len(num_nodes_per_graph), device=g.device), 
-            #     num_nodes_per_graph
-            # )
-            # tail_graph = graph_idx[tail_ids]
-            # tail_ids_fixed = head_ids.clone()
-            # tail_ids_fixed[tail_graph] = tail_ids
-            # tail_ids = tail_ids_fixed
-            # Compute the starting index of each graph
-            num_nodes_tensor = torch.tensor(num_nodes_per_graph, device=g.device)
-            start_idx = torch.cat([
-                torch.zeros(1, device=g.device),
-                torch.cumsum(num_nodes_tensor, dim=0)[:-1]
-            ])
-            # Map each tail_id to its corresponding graph index using searchsorted
-            tail_graph = torch.searchsorted(start_idx, tail_ids, right=False) - 1
-            # Initialize tail_ids_fixed with head_ids
-            tail_ids_fixed = head_ids.clone()
-            # Assign existing tail_ids to their respective graphs
-            tail_ids_fixed[tail_graph] = tail_ids
-            tail_ids = tail_ids_fixed
-        
+        g, rel_labels = data
         g.ndata['h'] = self.gnn(g)
+
         g_out = mean_nodes(g, 'repr')
+
+        head_ids = (g.ndata['id'] == 1).nonzero().squeeze(1)
         head_embs = g.ndata['repr'][head_ids]
+
+        tail_ids = (g.ndata['id'] == 2).nonzero().squeeze(1)
         tail_embs = g.ndata['repr'][tail_ids]
 
         if self.params.add_ht_emb:
