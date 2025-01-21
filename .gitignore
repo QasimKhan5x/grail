@@ -5,6 +5,7 @@ experiments/
 data/
 logs/
 script.py
+experiments.txt
 
 #Saved and downloaded data files
 *.nt.gz
