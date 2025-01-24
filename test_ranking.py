@@ -3,6 +3,7 @@ import argparse
 import logging
 import json
 import time
+import random
 
 from scipy.sparse import issparse
 import multiprocessing as mp
@@ -15,6 +16,13 @@ import matplotlib.pyplot as plt
 
 from subgraph_extraction.graph_sampler import subgraph_extraction_labeling
 from utils.graph_utils import ssp_multigraph_to_dgl
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
 
 
 def process_files(files, saved_relation2id, add_traspose_rels):
@@ -37,6 +45,8 @@ def process_files(files, saved_relation2id, add_traspose_rels):
             file_data = [line.split() for line in f.read().split("\n")[:-1]]
 
         for triplet in file_data:
+            if triplet[0] == triplet[2]:
+                continue
             if triplet[0] not in entity2id:
                 entity2id[triplet[0]] = ent
                 ent += 1
@@ -612,6 +622,8 @@ def get_kge_embeddings(dataset, kge_model):
 
 
 def main(params):
+    seed_everything(42)
+
     model = torch.load(params.model_path, map_location="cpu")
 
     adj_list, dgl_adj_list, triplets, entity2id, relation2id, id2entity, id2relation = (
