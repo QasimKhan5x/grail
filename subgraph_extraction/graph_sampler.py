@@ -12,79 +12,113 @@ from scipy.sparse import coo_matrix
 from utils.graph_utils import serialize
 from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
-
+import logging
+import numpy as np
+import random
+import logging
+from tqdm import tqdm
+from scipy.sparse import coo_matrix
 
 def sample_neg(
     adj_list,
     edges,
     num_neg_samples_per_link=1,
+    disjoint_ontology: dict = None, 
+    range_ontology: dict = None, 
+    domain_ontology: dict = None,
     max_size=1000000,
     constrained_neg_prob=0,
 ):
-    """
-    Fully vectorized negative sampling for train/test datasets.
-
-    Parameters:
-        adj_list (list): List of adjacency matrices (one per relation).
-        edges (ndarray): Positive edges [head, tail, relation].
-        num_neg_samples_per_link (int): Number of negative samples per positive edge.
-        max_size (int): Max number of edges to process.
-        constrained_neg_prob (float): Probability of sampling constrained negatives.
-
-    Returns:
-        pos_edges, neg_edges: Positive and negative edges.
-    """
+    logging.info("Starting negative sampling.")
+    print("disjoint_ontology is loaded in sample_neg with length:", len(disjoint_ontology))
+    print("range_ontology is loaded in sample_neg with length:", len(range_ontology))
+    print("domain_ontology is loaded in sample_neg with length:", len(domain_ontology))
+    
     pos_edges = edges
-
-    # Step 1: Limit the number of positive edges
     if max_size < len(pos_edges):
         perm = np.random.permutation(len(pos_edges))[:max_size]
         pos_edges = pos_edges[perm]
-
-    n = adj_list[0].shape[0]  # Number of nodes
-    r = len(adj_list)  # Number of relations
-
-    # Step 2: Convert the adjacency list to a single block diagonal matrix for efficiency
-    adj_block = coo_matrix(([], ([], [])), shape=(n * r, n))  # Initialize empty block
+    
+    n = adj_list[0].shape[0]  # number of nodes
+    r = len(adj_list)  # number of relations
+    
+    adj_block = coo_matrix(([], ([], [])), shape=(n * r, n))
     for rel_idx, adj in enumerate(adj_list):
-        row, col, data = adj.tocoo().row, adj.tocoo().col, adj.tocoo().data
+        row = adj.tocoo().row
+        col = adj.tocoo().col
+        data = adj.tocoo().data
         adj_block += coo_matrix((data, (row + rel_idx * n, col)), shape=(n * r, n))
-
-    adj_csr = adj_block.tocsr()  # Convert to CSR for fast slicing
-
-    neg_edges = []
-    pbar = tqdm(
-        total=num_neg_samples_per_link * len(pos_edges), desc="Negative Sampling"
-    )
-
-    # Step 3: Fully vectorized sampling
-    while len(neg_edges) < num_neg_samples_per_link * len(pos_edges):
-        batch_size = min(
-            10000, num_neg_samples_per_link * len(pos_edges) - len(neg_edges)
-        )
+    adj_csr = adj_block.tocsr()
+    
+    pos_set = set(tuple(edge) for edge in pos_edges.tolist())
+    
+    total_negatives = num_neg_samples_per_link * len(pos_edges)
+    num_ontology = int(np.floor(0.05 * total_negatives))
+    num_structural = int(np.floor(0.05 * total_negatives))
+    num_random = total_negatives - num_ontology - num_structural
+    
+    def ontology_based_negative(h, t, r):
+        if r in disjoint_ontology and t in disjoint_ontology[r]:
+            h_prime = random.choice(disjoint_ontology[r][t])
+            return (h_prime, r, t)
+        elif r in domain_ontology:
+            h_prime = random.choice([e for e in range(n) if e not in domain_ontology[r]])
+            return (h_prime, r, t)
+        elif r in range_ontology:
+            t_prime = random.choice([e for e in range(n) if e not in range_ontology[r]])
+            return (h, r, t_prime)
+        return None
+    
+    random_negatives = []
+    pbar_random = tqdm(total=num_random, desc="Random Negative Sampling")
+    while len(random_negatives) < num_random:
+        batch_size = min(10000, num_random - len(random_negatives))
         neg_heads = np.random.choice(n, size=batch_size)
         neg_tails = np.random.choice(n, size=batch_size)
         rels = np.random.choice(r, size=batch_size)
-
-        # Map relation indices to block offsets in the adjacency matrix
         row_offsets = rels * n
         rows = row_offsets + neg_heads
-
-        # Check if the sampled edges are valid (do not exist in the adjacency matrix)
-        valid_mask = (neg_heads != neg_tails) & (
-            np.asarray(adj_csr[rows, neg_tails]).ravel() == 0
-        )
-
-        # Collect valid edges
+        valid_mask = (neg_heads != neg_tails) & (np.asarray(adj_csr[rows, neg_tails]).ravel() == 0)
         valid_neg_edges = np.stack(
             [neg_heads[valid_mask], neg_tails[valid_mask], rels[valid_mask]], axis=1
         )
-        neg_edges.extend(valid_neg_edges.tolist())
-        pbar.update(len(valid_neg_edges))
-
-    pbar.close()
-
-    neg_edges = np.array(neg_edges)
+        for edge in valid_neg_edges.tolist():
+            if tuple(edge) not in pos_set:
+                random_negatives.append(edge)
+        pbar_random.update(len(valid_neg_edges))
+    pbar_random.close()
+    logging.info("Random negative sampling complete: %d negatives generated.", len(random_negatives))
+    
+    ontology_negatives = []
+    pbar_ontology = tqdm(total=num_ontology, desc="Ontology-Based Negative Sampling")
+    idx = 0
+    pos_edges_list = pos_edges.tolist()
+    while len(ontology_negatives) < num_ontology:
+        h, t, r = pos_edges_list[idx % len(pos_edges_list)]
+        idx += 1
+        candidate_edge = ontology_based_negative(h, t, r)
+        if candidate_edge and candidate_edge not in pos_set:
+            ontology_negatives.append(candidate_edge)
+            pbar_ontology.update(1)
+    pbar_ontology.close()
+    logging.info("Ontology-based negative sampling complete: %d negatives generated.", len(ontology_negatives))
+    
+    structural_negatives = []
+    pbar_structural = tqdm(total=num_structural, desc="Structural Negative Sampling")
+    idx = 0
+    while len(structural_negatives) < num_structural:
+        h, t, r = pos_edges_list[idx % len(pos_edges_list)]
+        idx += 1
+        new_h = np.random.randint(n)
+        new_t = np.random.randint(n)
+        if (new_h, t, r) not in pos_set and (h, new_t, r) not in pos_set:
+            structural_negatives.append((new_h, r, t) if np.random.rand() < 0.5 else (h, r, new_t))
+            pbar_structural.update(1)
+    pbar_structural.close()
+    logging.info("Structural negative sampling complete: %d negatives generated.", len(structural_negatives))
+    
+    neg_edges = np.array(random_negatives[:num_random] + ontology_negatives[:num_ontology] + structural_negatives[:num_structural])
+    logging.info("Negative sampling finished successfully. Total negatives generated: %d", neg_edges.shape[0])
     return pos_edges, neg_edges
 
 
@@ -117,7 +151,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
     links_length = sum(
         (len(split["pos"]) + len(split["neg"])) * 2 for split in graphs.values()
     )
-    map_size = math.ceil(links_length * BYTES_PER_DATUM) * 2
+    map_size = math.ceil(links_length * BYTES_PER_DATUM) * 3
 
     env = lmdb.open(params.db_path, map_size=map_size, max_dbs=6)
 

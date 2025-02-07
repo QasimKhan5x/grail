@@ -1,4 +1,4 @@
-folder = "data/DBpedia"
+folder = "/gpfs/workdir/yutaoc/grail/data/NELL-Elisa"
 
 # Load entity2id and relation2id mappings
 def load_mapping(file_path):

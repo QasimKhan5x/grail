@@ -12,18 +12,20 @@ from utils.data_utils import process_files, save_to_file, plot_rel_dist
 from utils.time_utils import timing_decorator
 from .graph_sampler import *
 import torch
+import logging
+
 
 @timing_decorator
 def generate_subgraph_datasets(
-    params, splits=["train", "valid"], saved_relation2id=None, max_label_value=None
+    params, splits=["train", "valid"], saved_relation2id=None, saved_entity2id=None, max_label_value=None
 ):
 
     testing = "test" in splits
     adj_list, triplets, entity2id, relation2id, id2entity, id2relation = process_files(
-        params.file_paths, saved_relation2id
+        params.file_paths, params.saved_relation2id, params.saved_entity2id
     )
 
-    # plot_rel_dist(adj_list, os.path.join(params.main_dir, f'data/{params.dataset}/rel_dist.png'))
+    plot_rel_dist(adj_list, os.path.join(params.data_dir, f'data/{params.dataset}/rel_dist.png'))
 
     data_path = os.path.join(params.data_dir, f"data/{params.dataset}/relation2id.json")
     if not os.path.isdir(data_path) and not testing:
@@ -45,12 +47,15 @@ def generate_subgraph_datasets(
             adj_list,
             split["triplets"],
             params.num_neg_samples_per_link,
+            params.disjoint_ontology, 
+            params.range_ontology, 
+            params.domain_ontology,
             max_size=split["max_size"],
-            constrained_neg_prob=params.constrained_neg_prob,
+            constrained_neg_prob=params.constrained_neg_prob
         )
 
     if testing:
-        directory = os.path.join(params.main_dir, "data/{}/".format(params.dataset))
+        directory = os.path.join(params.data_dir, "data/{}/".format(params.dataset))
         save_to_file(
             directory,
             f"neg_{params.test_file}_{params.constrained_neg_prob}.txt",

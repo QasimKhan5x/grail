@@ -493,12 +493,12 @@ def get_subgraphs(
 
 
 def save_to_file(neg_triplets, id2entity, id2relation, dataset):
-    with open(os.path.join("./data", dataset, "ranking_head.txt"), "w") as f:
+    with open(os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "ranking_head.txt"), "w") as f:
         for neg_triplet in neg_triplets:
             for s, o, r in neg_triplet["head"][0].reshape(-1, 3):
                 f.write("\t".join([id2entity[s], id2relation[r], id2entity[o]]) + "\n")
 
-    with open(os.path.join("./data", dataset, "ranking_tail.txt"), "w") as f:
+    with open(os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "ranking_tail.txt"), "w") as f:
         for neg_triplet in neg_triplets:
             for s, o, r in neg_triplet["tail"][0].reshape(-1, 3):
                 f.write("\t".join([id2entity[s], id2relation[r], id2entity[o]]) + "\n")
@@ -508,7 +508,7 @@ def save_score_to_file(
     neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset
 ):
     with open(
-        os.path.join("./data", dataset, "grail_ranking_head_predictions.txt"), "w"
+        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_head_predictions.txt"), "w"
     ) as f:
         for i, neg_triplet in enumerate(neg_triplets):
             for [s, o, r], head_score in zip(
@@ -522,7 +522,7 @@ def save_score_to_file(
                 )
 
     with open(
-        os.path.join("./data", dataset, "grail_ranking_tail_predictions.txt"), "w"
+        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_tail_predictions.txt"), "w"
     ) as f:
         for i, neg_triplet in enumerate(neg_triplets):
             for [s, o, r], tail_score in zip(
@@ -540,7 +540,7 @@ def save_score_to_file_from_ruleN(
     neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset
 ):
     with open(
-        os.path.join("./data", dataset, "grail_ruleN_ranking_head_predictions.txt"), "w"
+        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ruleN_ranking_head_predictions.txt"), "w"
     ) as f:
         for i, neg_triplet in enumerate(neg_triplets):
             for [s, o, r], head_score in zip(
@@ -554,7 +554,7 @@ def save_score_to_file_from_ruleN(
                 )
 
     with open(
-        os.path.join("./data", dataset, "grail_ruleN_ranking_tail_predictions.txt"), "w"
+        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ruleN_ranking_tail_predictions.txt"), "w"
     ) as f:
         for i, neg_triplet in enumerate(neg_triplets):
             for [s, o, r], tail_score in zip(
@@ -567,7 +567,7 @@ def save_score_to_file_from_ruleN(
                     + "\n"
                 )
 
-
+@torch.no_grad()
 def get_rank(neg_links):
     head_neg_links = neg_links["head"][0]
     head_target_id = neg_links["head"][1]
@@ -647,10 +647,12 @@ def main(params):
         neg_triplets = get_neg_samples_replacing_head_tail_from_ruleN(
             params.ruleN_pred_path, entity2id, relation2id
         )
-
+    print("Generated negative triplets.")
     ranks = []
     all_head_scores = []
     all_tail_scores = []
+
+    print("Started ranking...")
     with mp.Pool(
         processes=None,
         initializer=intialize_worker,
@@ -665,7 +667,7 @@ def main(params):
         ),
     ) as p:
         for head_scores, head_rank, tail_scores, tail_rank in tqdm(
-            p.imap(get_rank, neg_triplets), total=len(neg_triplets)
+            p.imap(get_rank, neg_triplets), total=len(neg_triplets), desc="Ranking"
         ):
             ranks.append(head_rank)
             ranks.append(tail_rank)
@@ -726,7 +728,8 @@ def main(params):
     plt.ylabel("Hits Ratio")
     plt.grid(True)
     plt.legend()
-    plt.show()
+    plt.savefig(f"hits_{params.dataset}.png", dpi=300, bbox_inches="tight")
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -744,7 +747,7 @@ if __name__ == "__main__":
         help="Experiment name. Log file with this name will be created",
     )
     parser.add_argument(
-        "--dataset", "-d", type=str, default="FB237_v2", help="Path to dataset"
+        "--dataset", "-d", type=str, default="WN18RR", help="Path to dataset"
     )
     parser.add_argument(
         "--mode",
@@ -790,12 +793,12 @@ if __name__ == "__main__":
     params = parser.parse_args()
 
     params.file_paths = {
-        "graph": os.path.join("./data", params.dataset, "train.txt"),
-        "links": os.path.join("./data", params.dataset, "test.txt"),
+        "graph": os.path.join("/gpfs/workdir/yutaoc/grail", "data", params.dataset, "train.txt"),
+        "links": os.path.join("/gpfs/workdir/yutaoc/grail", "data", params.dataset, "test.txt"),
     }
 
     params.ruleN_pred_path = os.path.join(
-        "./data", params.dataset, "pos_predictions.txt"
+        "/gpfs/workdir/yutaoc/grail", "data", params.dataset, "pos_predictions.txt"
     )
     params.model_path = os.path.join(
         "experiments", params.experiment_name, "best_graph_classifier.pth"

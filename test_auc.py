@@ -31,7 +31,7 @@ def main(params):
     for r in range(1, params.runs + 1):
 
         params.db_path = os.path.join(
-            params.main_dir,
+            params.data_dir,
             f"data/{params.dataset}/test_subgraphs_{params.experiment_name}_{params.constrained_neg_prob}_en_{params.enclosing_sub_graph}",
         )
 
@@ -194,13 +194,14 @@ if __name__ == "__main__":
 
     params = parser.parse_args()
     initialize_experiment(params, __file__)
+    params.data_dir = "/gpfs/workdir/yutaoc/grail"
 
     params.file_paths = {
         "train": os.path.join(
-            params.main_dir, "data/{}/{}.txt".format(params.dataset, params.train_file)
+            params.data_dir, "data/{}/{}.txt".format(params.dataset, params.train_file)
         ),
         "test": os.path.join(
-            params.main_dir, "data/{}/{}.txt".format(params.dataset, params.test_file)
+            params.data_dir, "data/{}/{}.txt".format(params.dataset, params.test_file)
         ),
     }
 
@@ -211,5 +212,5 @@ if __name__ == "__main__":
 
     params.collate_fn = collate_dgl
     params.move_batch_to_device = move_batch_to_device_dgl
-    params.data_dir = "."
+    
     main(params)
