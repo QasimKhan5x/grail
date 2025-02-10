@@ -17,35 +17,90 @@ import matplotlib.pyplot as plt
 from subgraph_extraction.graph_sampler import subgraph_extraction_labeling
 from utils.graph_utils import ssp_multigraph_to_dgl
 
+import psutil
+import os
+
+
+def print_memory_usage():
+    process = psutil.Process(os.getpid())
+    print(f"Memory usage: {process.memory_info().rss / (1024 ** 2):.2f} MB")
+
+
 def seed_everything(seed: int):
     random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
 
+def process_in_batches(test_links, adj_list, batch_size, num_samples=50):
+    """
+    Process test_links in batches to avoid memory issues.
+    """
+    num_links = len(test_links)
+    for i in range(0, num_links, batch_size):
+        batch_links = test_links[i : i + batch_size]
+        yield get_neg_samples_replacing_head_tail(batch_links, adj_list, num_samples)
+
+
+def get_neg_samples_replacing_head_tail(test_links, adj_list, num_samples=50):
+    """
+    Generate negative samples by replacing heads and tails in test_links,
+    returning exactly `num_samples` negative examples for head and tail each.
+    """
+    # adj_list[r] is a sparse adjacency matrix for relation r
+    n = adj_list[0].shape[0]  # number of entities
+    r = len(adj_list)
+
+    heads, tails, rels = test_links[:, 0], test_links[:, 1], test_links[:, 2]
+    neg_triplets = []
+
+    for head, tail, rel in zip(heads, tails, rels):
+        neg_triplet = {"head": [[], 0], "tail": [[], 0]}
+
+        # 1) Head replaced negative samples
+        #    We keep the original triplet as the first element:
+        head_list = [[head, tail, rel]]
+        while len(head_list) < num_samples:
+            neg_tail = np.random.randint(0, n)
+            if neg_tail != head and adj_list[rel][head, neg_tail] == 0:
+                head_list.append([head, neg_tail, rel])
+        neg_triplet["head"][0] = np.array(head_list)
+
+        # 2) Tail replaced negative samples
+        tail_list = [[head, tail, rel]]
+        while len(tail_list) < num_samples:
+            neg_head = np.random.randint(0, n)
+            if neg_head != tail and adj_list[rel][neg_head, tail] == 0:
+                tail_list.append([neg_head, tail, rel])
+        neg_triplet["tail"][0] = np.array(tail_list)
+
+        neg_triplets.append(neg_triplet)
+
+    return neg_triplets
+
+
 def process_files(files, saved_relation2id, add_traspose_rels):
     """
-    files: Dictionary map of file paths to read the triplets from.
-    saved_relation2id: Saved relation2id (mostly passed from a trained model) which can be used to map relations to pre-defined indices and filter out the unknown ones.
+    Build sparse adjacency lists for each known relation, etc.
     """
     entity2id = {}
     relation2id = saved_relation2id
 
     triplets = {}
-
     ent = 0
-    rel = 0
 
     for file_type, file_path in files.items():
-
         data = []
         with open(file_path) as f:
-            file_data = [line.split() for line in f.read().split("\n")[:-1]]
+            file_data = [line.split() for line in f.read().split("\n") if line.strip()]
 
         for triplet in file_data:
+            if len(triplet) < 3:
+                continue
             if triplet[0] == triplet[2]:
+                # skip self-loops, e.g. (a, r, a)
                 continue
             if triplet[0] not in entity2id:
                 entity2id[triplet[0]] = ent
@@ -54,7 +109,7 @@ def process_files(files, saved_relation2id, add_traspose_rels):
                 entity2id[triplet[2]] = ent
                 ent += 1
 
-            # Save the triplets corresponding to only the known relations
+            # Only save triplets for known relations
             if triplet[1] in saved_relation2id:
                 data.append(
                     [
@@ -69,24 +124,20 @@ def process_files(files, saved_relation2id, add_traspose_rels):
     id2entity = {v: k for k, v in entity2id.items()}
     id2relation = {v: k for k, v in relation2id.items()}
 
-    # Construct the list of adjacency matrix each corresponding to eeach relation. Note that this is constructed only from the train data.
+    # Construct adjacency list from 'graph' portion (train set)
+    num_entities = len(entity2id)
     adj_list = []
     for i in range(len(saved_relation2id)):
-        idx = np.argwhere(triplets["graph"][:, 2] == i)
-        adj_list.append(
-            ssp.csc_matrix(
-                (
-                    np.ones(len(idx), dtype=np.uint8),
-                    (
-                        triplets["graph"][:, 0][idx].squeeze(1),
-                        triplets["graph"][:, 1][idx].squeeze(1),
-                    ),
-                ),
-                shape=(len(entity2id), len(entity2id)),
-            )
-        )
+        # indices where relation == i
+        idx = np.where(triplets["graph"][:, 2] == i)[0]
+        rows = triplets["graph"][idx, 0]
+        cols = triplets["graph"][idx, 1]
+        data = np.ones(len(idx), dtype=np.uint8)
 
-    # Add transpose matrices to handle both directions of relations.
+        adj = ssp.csc_matrix((data, (rows, cols)), shape=(num_entities, num_entities))
+        adj_list.append(adj)
+
+    # Optionally add transpose relations
     adj_list_aug = adj_list
     if add_traspose_rels:
         adj_list_t = [adj.T for adj in adj_list]
@@ -105,6 +156,11 @@ def process_files(files, saved_relation2id, add_traspose_rels):
     )
 
 
+########################
+### SUBGRAPH UTILS #####
+########################
+
+
 def intialize_worker(
     model, adj_list, dgl_adj_list, id2entity, params, node_features, kge_entity2id
 ):
@@ -120,267 +176,46 @@ def intialize_worker(
     ) = (model, adj_list, dgl_adj_list, id2entity, params, node_features, kge_entity2id)
 
 
-def get_neg_samples_replacing_head_tail(test_links, adj_list, num_samples=50):
+def get_kge_embeddings(dataset, kge_model):
     """
-    Generate negative samples by replacing heads and tails in test_links.
-
-    Args:
-        test_links (np.ndarray): Array of shape (num_links, 3) containing test triplets (head, tail, rel).
-        adj_list (list of np.ndarray or list of scipy.sparse matrices):
-            List where each element is an adjacency matrix for a relation.
-        num_samples (int): Number of negative samples to generate for each test link.
-
-    Returns:
-        list of dict: Each dictionary contains 'head' and 'tail' keys with corresponding negative samples.
+    Load pretrained KGE embeddings if needed.
     """
-    # Validate and prepare adjacency matrices
-    processed_adj_list = []
-    for idx, rel_adj in enumerate(adj_list):
-        if isinstance(rel_adj, np.ndarray):
-            processed_adj_list.append(rel_adj)
-        else:
-            # Attempt to convert sparse matrices to dense
-            dense_adj = rel_adj.toarray()
-            processed_adj_list.append(dense_adj)
-
-    # Stack adjacency matrices into a 3D NumPy array
-    adj_stack = np.stack(processed_adj_list)  # Shape: (r, n, n)
-
-    r, n, n_check = adj_stack.shape
-
-    # Extract heads, tails, and relations from test_links
-    heads, tails, rels = test_links[:, 0], test_links[:, 1], test_links[:, 2]
-    num_links = len(test_links)
-
-    neg_triplets = []
-
-    for i in range(num_links):
-        head, tail, rel = heads[i], tails[i], rels[i]
-
-        # Initialize negative samples with the original triplet
-        head_neg = [[head, tail, rel]]
-        tail_neg = [[head, tail, rel]]
-
-        # Number of samples needed excluding the original triplet
-        needed_head = num_samples - 1
-        needed_tail = num_samples - 1
-
-        # Generate negative samples by replacing the tail
-        while needed_head > 0:
-            # Sample in batches to reduce the number of iterations
-            batch_size = max(needed_head * 2, 100)
-            sampled_tails = np.random.randint(0, n, size=batch_size)
-
-            # Apply conditions: neg_tail != head and adj_list[rel][head, neg_tail] == 0
-            condition_tail = sampled_tails != head
-            condition_no_edge_tail = adj_stack[rel, head, sampled_tails] == 0
-            valid_mask = condition_tail & condition_no_edge_tail
-            valid_tails = sampled_tails[valid_mask]
-
-            # Append valid samples
-            for neg_tail_val in valid_tails:
-                head_neg.append([head, neg_tail_val, rel])
-                needed_head -= 1
-                if needed_head == 0:
-                    break
-
-            # Safety check to prevent infinite loops
-            if batch_size > n * 2:
-                break  # Assuming insufficient valid samples
-
-        # Generate negative samples by replacing the head
-        while needed_tail > 0:
-            # Sample in batches to reduce the number of iterations
-            batch_size = max(needed_tail * 2, 100)
-            sampled_heads = np.random.randint(0, n, size=batch_size)
-
-            # Apply conditions: neg_head != tail and adj_list[rel][neg_head, tail] == 0
-            condition_head = sampled_heads != tail
-            condition_no_edge_head = adj_stack[rel, sampled_heads, tail] == 0
-            valid_mask = condition_head & condition_no_edge_head
-            valid_heads = sampled_heads[valid_mask]
-
-            # Append valid samples
-            for neg_head_val in valid_heads:
-                tail_neg.append([neg_head_val, tail, rel])
-                needed_tail -= 1
-                if needed_tail == 0:
-                    break
-
-            # Safety check to prevent infinite loops
-            if batch_size > n * 2:
-                break  # Assuming insufficient valid samples
-
-        # Convert lists to NumPy arrays
-        head_neg_array = np.array(head_neg)
-        tail_neg_array = np.array(tail_neg)
-
-        # Append to the result list
-        neg_triplets.append({"head": [head_neg_array, 0], "tail": [tail_neg_array, 0]})
-
-    return neg_triplets
+    path = f"./experiments/kge_baselines/{kge_model}_{dataset}"
+    node_features = np.load(os.path.join(path, "entity_embedding.npy"))
+    with open(os.path.join(path, "id2entity.json")) as json_file:
+        kge_id2entity = json.load(json_file)
+        kge_entity2id = {v: int(k) for k, v in kge_id2entity.items()}
+    return node_features, kge_entity2id
 
 
-def get_neg_samples_replacing_head_tail_all(test_links, adj_list):
-    """
-    Generate all possible negative samples by replacing heads and tails in test_links.
+#############################
+### SUBGRAPH EXTRACTION  ####
+#############################
 
-    Args:
-        test_links (np.ndarray): Array of shape (num_links, 3) containing test triplets (head, tail, rel).
-        adj_list (list of np.ndarray or list of scipy.sparse matrices):
-            List where each element is an adjacency matrix for a relation.
-
-    Returns:
-        list of dict: Each dictionary contains 'head' and 'tail' keys with corresponding negative samples.
-                      The structure is {'head': [array_of_neg_samples, 0], 'tail': [array_of_neg_samples, 0]}.
-    """
-    # Validate and prepare adjacency matrices
-    processed_adj_list = []
-    for idx, rel_adj in enumerate(adj_list):
-        if isinstance(rel_adj, np.ndarray):
-            if rel_adj.ndim != 2:
-                raise ValueError(
-                    f"Adjacency matrix for relation {idx} is not 2-dimensional."
-                )
-            processed_adj_list.append(rel_adj)
-        elif issparse(rel_adj):
-            # Convert sparse matrices to dense
-            dense_adj = rel_adj.toarray()
-            if dense_adj.ndim != 2:
-                raise ValueError(
-                    f"Adjacency matrix for relation {idx} could not be converted to 2D."
-                )
-            processed_adj_list.append(dense_adj)
-        else:
-            raise TypeError(
-                f"Adjacency matrix for relation {idx} is neither a NumPy array nor a sparse matrix."
-            )
-
-    # Stack adjacency matrices into a 3D NumPy array
-    try:
-        adj_stack = np.stack(processed_adj_list)  # Shape: (r, n, n)
-    except ValueError as e:
-        raise ValueError(f"Failed to stack adjacency matrices: {e}")
-
-    # Verify the shape of adj_stack
-    if adj_stack.ndim != 3:
-        raise ValueError(
-            f"Expected adj_stack to be 3-dimensional, but got shape {adj_stack.shape}"
-        )
-
-    r, n, n_check = adj_stack.shape
-    if n != n_check:
-        raise ValueError(
-            f"Adjacency matrices must be square. Found shape {adj_stack.shape}"
-        )
-
-    # Extract heads, tails, and relations from test_links
-    heads, tails, rels = test_links[:, 0], test_links[:, 1], test_links[:, 2]
-    num_links = len(test_links)
-
-    neg_triplets = []
-
-    for i in tqdm(range(num_links), total=num_links, desc="Sampling negative triplets"):
-        head, tail, rel = heads[i], tails[i], rels[i]
-
-        # Validate relation index
-        if rel < 0 or rel >= r:
-            raise IndexError(
-                f"Relation index {rel} out of bounds for adj_stack with {r} relations."
-            )
-
-        # Get the adjacency matrix for the current relation
-        rel_adj = adj_stack[rel]  # Shape: (n, n)
-
-        # **Generating Negative Samples by Replacing Tails**
-        # Condition 1: neg_tail != head
-        # Condition 2: (head, neg_tail, rel) does not exist in adj_list[rel]
-        # Equivalent to: rel_adj[head, neg_tail] == 0 and neg_tail != head
-
-        # Create a boolean mask for valid neg_tails
-        mask_neg_tails = (rel_adj[head] == 0) & (np.arange(n) != head)
-        valid_neg_tails = np.where(mask_neg_tails)[0]
-
-        # **Generating Negative Samples by Replacing Heads**
-        # Condition 1: neg_head != tail
-        # Condition 2: (neg_head, tail, rel) does not exist in adj_list[rel}
-        # Equivalent to: rel_adj[neg_head, tail] == 0 and neg_head != tail
-
-        # Create a boolean mask for valid neg_heads
-        mask_neg_heads = (rel_adj[:, tail] == 0) & (np.arange(n) != tail)
-        valid_neg_heads = np.where(mask_neg_heads)[0]
-
-        # **Constructing the Negative Triplet Dictionary**
-        # Initialize with the original triplet
-        head_neg = [[head, tail, rel]]
-        tail_neg = [[head, tail, rel]]
-
-        # Append all valid negative tail replacements
-        if valid_neg_tails.size > 0:
-            head_neg.extend([[head, neg_tail, rel] for neg_tail in valid_neg_tails])
-
-        # Append all valid negative head replacements
-        if valid_neg_heads.size > 0:
-            tail_neg.extend([[neg_head, tail, rel] for neg_head in valid_neg_heads])
-
-        # Convert lists to NumPy arrays
-        head_neg_array = np.array(head_neg)
-        tail_neg_array = np.array(tail_neg)
-
-        # Append to the result list
-        neg_triplets.append({"head": [head_neg_array, 0], "tail": [tail_neg_array, 0]})
-
-    return neg_triplets
-
-
-def get_neg_samples_replacing_head_tail_from_ruleN(
-    ruleN_pred_path, entity2id, saved_relation2id
-):
-    with open(ruleN_pred_path) as f:
-        pred_data = [line.split() for line in f.read().split("\n")[:-1]]
-
-    neg_triplets = []
-    for i in range(len(pred_data) // 3):
-        neg_triplet = {"head": [[], 10000], "tail": [[], 10000]}
-        if pred_data[3 * i][1] in saved_relation2id:
-            head, rel, tail = (
-                entity2id[pred_data[3 * i][0]],
-                saved_relation2id[pred_data[3 * i][1]],
-                entity2id[pred_data[3 * i][2]],
-            )
-            for j, new_head in enumerate(pred_data[3 * i + 1][1::2]):
-                neg_triplet["head"][0].append([entity2id[new_head], tail, rel])
-                if entity2id[new_head] == head:
-                    neg_triplet["head"][1] = j
-            for j, new_tail in enumerate(pred_data[3 * i + 2][1::2]):
-                neg_triplet["tail"][0].append([head, entity2id[new_tail], rel])
-                if entity2id[new_tail] == tail:
-                    neg_triplet["tail"][1] = j
-
-            neg_triplet["head"][0] = np.array(neg_triplet["head"][0])
-            neg_triplet["tail"][0] = np.array(neg_triplet["tail"][0])
-
-            neg_triplets.append(neg_triplet)
-
-    return neg_triplets
 
 def prepare_features(subgraph, n_labels, max_n_label, n_feats=None):
-    # One hot encode the node label feature and concat to n_featsure
+    """
+    Prepare the node features and attach them to subgraph.ndata['feat'].
+    """
     n_nodes = subgraph.number_of_nodes()
     label_feats = np.zeros((n_nodes, max_n_label[0] + 1 + max_n_label[1] + 1))
     label_feats[np.arange(n_nodes), n_labels[:, 0]] = 1
     label_feats[np.arange(n_nodes), max_n_label[0] + 1 + n_labels[:, 1]] = 1
 
-    n_feats = np.concatenate((label_feats, n_feats), axis=1) if n_feats is not None else label_feats
-    subgraph.ndata['feat'] = torch.FloatTensor(n_feats)
+    if n_feats is not None:
+        n_feats = np.concatenate((label_feats, n_feats), axis=1)
+    else:
+        n_feats = label_feats
 
-    head_id = np.argwhere([label[0] == 0 and label[1] == 1 for label in n_labels])
-    tail_id = np.argwhere([label[0] == 1 and label[1] == 0 for label in n_labels])
+    subgraph.ndata["feat"] = torch.FloatTensor(n_feats)
+
+    # Mark head/tail
+    head_id = np.argwhere((n_labels[:, 0] == 0) & (n_labels[:, 1] == 1))
+    tail_id = np.argwhere((n_labels[:, 0] == 1) & (n_labels[:, 1] == 0))
     n_ids = np.zeros(n_nodes)
     n_ids[head_id] = 1  # head
     n_ids[tail_id] = 2  # tail
-    subgraph.ndata['id'] = torch.FloatTensor(n_ids)
-
+    subgraph.ndata["id"] = torch.FloatTensor(n_ids)
     return subgraph
 
 
@@ -394,186 +229,159 @@ def get_subgraphs(
     kge_entity2id=None,
 ):
     """
-    Extracts subgraphs for each link in all_links.
-
-    Parameters:
-    - all_links: Iterable of triplets (head, tail, relation)
-    - adj_list: List of adjacency matrices
-    - dgl_adj_list: DGLGraph corresponding to adj_list
-    - max_node_label_value: Maximum node label value for features
-    - id2entity: Mapping from node IDs to entity names
-    - node_features: Optional node feature matrix
-    - kge_entity2id: Optional mapping from entities to KGE IDs
-
-    Returns:
-    - batched_graph: Batched DGLGraph containing all subgraphs
-    - r_labels: Tensor of relation labels
+    Extract subgraphs for each link in `all_links`.
     """
+    from subgraph_extraction.graph_sampler import subgraph_extraction_labeling
+
     subgraphs = []
     r_labels = []
 
+    # We combine all adjacency for BFS-based extraction
+    # (adj_list has multiple relations, so sum them to get an undirected adjacency)
     adj_matrix = sum(adj_list)
     adj_matrix = adj_matrix + adj_matrix.T
 
     for link in all_links:
         head, tail, rel = link[0], link[1], link[2]
-        
-        # Extract nodes and labels for the subgraph
+        # BFS subgraph extraction + labeling
         nodes, node_labels = subgraph_extraction_labeling(
-            (head, tail), rel, adj_matrix,
+            (head, tail),
+            rel,
+            adj_matrix,
             h=params_.hop,
             enclosing_sub_graph=params_.enclosing_sub_graph,
-            max_node_label_value=max_node_label_value
+            max_node_label_value=max_node_label_value,
         )[:2]
 
-        # Create subgraph using the list of nodes
-        subgraph = dgl_adj_list.subgraph(nodes)
+        # Subgraph
+        sg = dgl_adj_list.subgraph(nodes)
+        # In DGL, edges keep a reference to the original graph's EIDs
+        parent_eids = sg.edata[dgl.EID]
+        sg.edata["type"] = dgl_adj_list.edata["type"][parent_eids]
+        sg.edata["label"] = torch.full((sg.number_of_edges(),), rel, dtype=torch.long)
 
-        # Assign 'type' and 'label' edge attributes based on parent edge IDs
-        parent_eids = subgraph.edata[dgl.EID]
-        subgraph.edata['type'] = dgl_adj_list.edata['type'][parent_eids]
-        subgraph.edata['label'] = torch.full(
-            (subgraph.number_of_edges(),),
-            rel,
-            dtype=torch.long,
-            device=subgraph.device  # Ensure the tensor is on the same device as the graph
-        )
-
-        # Check if there is an edge between node 0 and node 1 with relation 'rel'
-        if subgraph.number_of_nodes() > 1:
-            if subgraph.has_edges_between(0, 1):
-                try:
-                    # Get edge IDs from node 0 to node 1
-                    eids_between_roots = subgraph.edge_ids(0, 1, return_uv=False)
-                    # Check if any of these edges have 'type' == rel
-                    rel_link = (subgraph.edata['type'][eids_between_roots] == rel).nonzero(as_tuple=False).squeeze()
-                except KeyError:
-                    # No valid edge exists
-                    rel_link = torch.tensor([], device=subgraph.device)
-            else:
-                rel_link = torch.tensor([], device=subgraph.device)
-
-            # If no such edge exists, add it with the appropriate attributes
-            if rel_link.numel() == 0:
-                # Add edge from node 0 to node 1 with 'type' and 'label' equal to 'rel'
-                subgraph = dgl.add_edges(
-                    subgraph,
+        # Possibly add missing edge between node 0 and 1 if it doesn't exist
+        if sg.number_of_nodes() > 1:
+            if not sg.has_edges_between(0, 1):
+                # Add the correct edge for (head->tail)
+                sg = dgl.add_edges(
+                    sg,
                     [0],
                     [1],
-                    {'type': torch.tensor([rel], dtype=torch.long, device=subgraph.device),
-                     'label': torch.tensor([rel], dtype=torch.long, device=subgraph.device)}
+                    {
+                        "type": torch.tensor([rel], dtype=torch.long),
+                        "label": torch.tensor([rel], dtype=torch.long),
+                    },
                 )
 
-        # Handle KGE nodes and features if applicable
+        # If we have KGE embeddings, map the subgraph's nodes to KGE IDs
         if kge_entity2id is not None:
             kge_nodes = [kge_entity2id[id2entity[n]] for n in nodes]
         else:
             kge_nodes = None
 
-        if node_features is not None:
-            if kge_nodes is not None:
-                n_feats = node_features[kge_nodes]
-            else:
-                n_feats = None
+        # Prepare node features
+        if node_features is not None and kge_nodes is not None:
+            n_feats = node_features[kge_nodes]
         else:
             n_feats = None
 
-        # Prepare node features using the provided function
-        subgraph = prepare_features(subgraph, node_labels, max_node_label_value, n_feats)
-
-        # Append the processed subgraph and its label
-        subgraphs.append(subgraph)
+        sg = prepare_features(sg, node_labels, max_node_label_value, n_feats)
+        subgraphs.append(sg)
         r_labels.append(rel)
 
-    # Batch all subgraphs into a single graph
     batched_graph = dgl.batch(subgraphs)
     r_labels = torch.LongTensor(r_labels)
-
     return batched_graph, r_labels
 
 
-def save_to_file(neg_triplets, id2entity, id2relation, dataset):
-    with open(os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "ranking_head.txt"), "w") as f:
-        for neg_triplet in neg_triplets:
-            for s, o, r in neg_triplet["head"][0].reshape(-1, 3):
-                f.write("\t".join([id2entity[s], id2relation[r], id2entity[o]]) + "\n")
-
-    with open(os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "ranking_tail.txt"), "w") as f:
-        for neg_triplet in neg_triplets:
-            for s, o, r in neg_triplet["tail"][0].reshape(-1, 3):
-                f.write("\t".join([id2entity[s], id2relation[r], id2entity[o]]) + "\n")
+###################################
+### SCORING & RANK COMPUTATIONS ###
+###################################
 
 
 def save_score_to_file(
-    neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset
+    neg_triplets, head_scores_batch, tail_scores_batch, id2entity, id2relation, dataset
 ):
-    with open(
-        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_head_predictions.txt"), "w"
-    ) as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], head_score in zip(
-                neg_triplet["head"][0], all_head_scores[50 * i : 50 * (i + 1)]
-            ):
-                f.write(
-                    "\t".join(
-                        [id2entity[s], id2relation[r], id2entity[o], str(head_score)]
-                    )
+    """
+    Append the newly computed scores to disk immediately (batch by batch).
+    """
+    # Each `neg_triplets` is a list of size = batch_size, each item is a dict:
+    #    {'head': [array_of_triplets, 0], 'tail': [array_of_triplets, 0]}
+    # The arrays have shape (num_samples, 3).
+
+    # For each item in `neg_triplets`, we have `num_samples` for head, and `num_samples` for tail
+    # so total is `len(neg_triplets) * num_samples` scores in each of head_scores_batch / tail_scores_batch
+    # We expect them to line up in the order we appended them.
+
+    # We'll open two files in append mode:
+    head_path = os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_head_predictions.txt")
+    tail_path = os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_tail_predictions.txt")
+
+    # Be sure the number of negative triplets matches the number of scores
+    # By default, we used 50 samples per triple => 50 * len(neg_triplets).
+    # But let's not hardcode 50. We'll do it dynamically below.
+    idx_head_scores = 0
+    idx_tail_scores = 0
+
+    with open(head_path, "a") as f_head, open(tail_path, "a") as f_tail:
+        for i, neg_trip in enumerate(neg_triplets):
+            head_array = neg_trip["head"][0]  # shape (#neg_samples, 3)
+            tail_array = neg_trip["tail"][0]
+            n_h = head_array.shape[0]
+            n_t = tail_array.shape[0]
+
+            # The slice of head_scores_batch relevant to this test link
+            local_head_scores = head_scores_batch[
+                idx_head_scores : idx_head_scores + n_h
+            ]
+            local_tail_scores = tail_scores_batch[
+                idx_tail_scores : idx_tail_scores + n_t
+            ]
+
+            idx_head_scores += n_h
+            idx_tail_scores += n_t
+
+            # Write head predictions
+            for [s, o, r], sc in zip(head_array, local_head_scores):
+                f_head.write(
+                    "\t".join([id2entity[s], id2relation[r], id2entity[o], str(sc)])
                     + "\n"
                 )
 
-    with open(
-        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ranking_tail_predictions.txt"), "w"
-    ) as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], tail_score in zip(
-                neg_triplet["tail"][0], all_tail_scores[50 * i : 50 * (i + 1)]
-            ):
-                f.write(
-                    "\t".join(
-                        [id2entity[s], id2relation[r], id2entity[o], str(tail_score)]
-                    )
-                    + "\n"
-                )
-
-
-def save_score_to_file_from_ruleN(
-    neg_triplets, all_head_scores, all_tail_scores, id2entity, id2relation, dataset
-):
-    with open(
-        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ruleN_ranking_head_predictions.txt"), "w"
-    ) as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], head_score in zip(
-                neg_triplet["head"][0], all_head_scores[50 * i : 50 * (i + 1)]
-            ):
-                f.write(
-                    "\t".join(
-                        [id2entity[s], id2relation[r], id2entity[o], str(head_score)]
-                    )
-                    + "\n"
-                )
-
-    with open(
-        os.path.join("/gpfs/workdir/yutaoc/grail/data", dataset, "grail_ruleN_ranking_tail_predictions.txt"), "w"
-    ) as f:
-        for i, neg_triplet in enumerate(neg_triplets):
-            for [s, o, r], tail_score in zip(
-                neg_triplet["tail"][0], all_tail_scores[50 * i : 50 * (i + 1)]
-            ):
-                f.write(
-                    "\t".join(
-                        [id2entity[s], id2relation[r], id2entity[o], str(tail_score)]
-                    )
+            # Write tail predictions
+            for [s, o, r], sc in zip(tail_array, local_tail_scores):
+                f_tail.write(
+                    "\t".join([id2entity[s], id2relation[r], id2entity[o], str(sc)])
                     + "\n"
                 )
 
 @torch.no_grad()
 def get_rank(neg_links):
-    head_neg_links = neg_links["head"][0]
-    head_target_id = neg_links["head"][1]
+    """
+    For a single test instance in neg_links (which is a dict with 'head' and 'tail'),
+    compute the ranking metrics.
+    """
+    # This is called inside the multiprocessing pool.
+    # neg_links["head"][0] => array of shape (num_samples, 3)
+    # neg_links["head"][1] => index of the *true* triple among them, or 0 if it's the first?
+    # In your snippet, it looks like we always put the gold triple as the first example (index 0).
+    # So head_target_id = 0, tail_target_id = 0  in your revised sampling code.
 
-    if head_target_id != 10000:
-        data = get_subgraphs(
+    head_neg_links = neg_links["head"][0]
+    tail_neg_links = neg_links["tail"][0]
+
+    # By default, let's assume the "target" is at index=0
+    head_target_id = 0
+    tail_target_id = 0
+
+    # If there's some case where it's 10000, skip
+    if head_target_id >= head_neg_links.shape[0]:
+        head_scores = np.array([])
+        head_rank = 10000
+    else:
+        # Evaluate subgraphs
+        batched_graph, r_labels = get_subgraphs(
             head_neg_links,
             adj_list_,
             dgl_adj_list_,
@@ -582,17 +390,20 @@ def get_rank(neg_links):
             node_features_,
             kge_entity2id_,
         )
-        head_scores = model_(data).squeeze(1).detach().numpy()
-        head_rank = np.argwhere(np.argsort(head_scores)[::-1] == head_target_id) + 1
+        with torch.no_grad():
+            logits = model_((batched_graph, r_labels)).squeeze(1).cpu().numpy()
+        # rank the gold triple
+        # The gold triple was appended at index=0, so let's see where that score ends up among all
+        sorted_indices = np.argsort(logits)[::-1]  # descending
+        head_rank = int(np.where(sorted_indices == head_target_id)[0][0] + 1)
+        head_scores = logits  # store them all
+
+    # Tail side
+    if tail_target_id >= tail_neg_links.shape[0]:
+        tail_scores = np.array([])
+        tail_rank = 10000
     else:
-        head_scores = np.array([])
-        head_rank = 10000
-
-    tail_neg_links = neg_links["tail"][0]
-    tail_target_id = neg_links["tail"][1]
-
-    if tail_target_id != 10000:
-        data = get_subgraphs(
+        batched_graph, r_labels = get_subgraphs(
             tail_neg_links,
             adj_list_,
             dgl_adj_list_,
@@ -601,34 +412,36 @@ def get_rank(neg_links):
             node_features_,
             kge_entity2id_,
         )
-        tail_scores = model_(data).squeeze(1).detach().numpy()
-        tail_rank = np.argwhere(np.argsort(tail_scores)[::-1] == tail_target_id) + 1
-    else:
-        tail_scores = np.array([])
-        tail_rank = 10000
+        with torch.no_grad():
+            logits = model_((batched_graph, r_labels)).squeeze(1).cpu().numpy()
+        sorted_indices = np.argsort(logits)[::-1]  # descending
+        tail_rank = int(np.where(sorted_indices == tail_target_id)[0][0] + 1)
+        tail_scores = logits
 
     return head_scores, head_rank, tail_scores, tail_rank
 
 
-def get_kge_embeddings(dataset, kge_model):
-
-    path = "./experiments/kge_baselines/{}_{}".format(kge_model, dataset)
-    node_features = np.load(os.path.join(path, "entity_embedding.npy"))
-    with open(os.path.join(path, "id2entity.json")) as json_file:
-        kge_id2entity = json.load(json_file)
-        kge_entity2id = {v: int(k) for k, v in kge_id2entity.items()}
-
-    return node_features, kge_entity2id
+#####################
+####   MAIN()   #####
+#####################
 
 
 def main(params):
     seed_everything(42)
 
+    logger.info("Loading model...")
     model = torch.load(params.model_path, map_location="cpu")
 
-    adj_list, dgl_adj_list, triplets, entity2id, relation2id, id2entity, id2relation = (
-        process_files(params.file_paths, model.relation2id, params.add_traspose_rels)
-    )
+    logger.info("Processing files and building adjacency lists...")
+    (
+        adj_list,
+        dgl_adj_list,
+        triplets,
+        entity2id,
+        relation2id,
+        id2entity,
+        id2relation,
+    ) = process_files(params.file_paths, model.relation2id, params.add_traspose_rels)
 
     node_features, kge_entity2id = (
         get_kge_embeddings(params.dataset, params.kge_model)
@@ -636,25 +449,9 @@ def main(params):
         else (None, None)
     )
 
-    if params.mode == "sample":
-        neg_triplets = get_neg_samples_replacing_head_tail(triplets["links"], adj_list)
-        save_to_file(neg_triplets, id2entity, id2relation, params.dataset)
-    elif params.mode == "all":
-        neg_triplets = get_neg_samples_replacing_head_tail_all(
-            triplets["links"], adj_list
-        )
-    elif params.mode == "ruleN":
-        neg_triplets = get_neg_samples_replacing_head_tail_from_ruleN(
-            params.ruleN_pred_path, entity2id, relation2id
-        )
-    print("Generated negative triplets.")
-    ranks = []
-    all_head_scores = []
-    all_tail_scores = []
-
-    print("Started ranking...")
-    with mp.Pool(
-        processes=None,
+    # We create a single multiprocessing pool upfront:
+    pool = mp.Pool(
+        processes=mp.cpu_count(),
         initializer=intialize_worker,
         initargs=(
             model,
@@ -665,143 +462,172 @@ def main(params):
             node_features,
             kge_entity2id,
         ),
-    ) as p:
-        for head_scores, head_rank, tail_scores, tail_rank in tqdm(
-            p.imap(get_rank, neg_triplets), total=len(neg_triplets), desc="Ranking"
-        ):
+    )
+
+    ranks = []  # To store all ranks (both head+tail)
+    sum_rr = 0.0  # For MRR on the fly
+    count_ranks = 0  # total number of (head+tail) ranks
+
+    # For the final hits@k, you either store all ranks or compute partial counts
+    hits_count = {1: 0, 5: 0, 10: 0}
+    thresholds_to_track = [1, 5, 10]
+
+    logger.info("Starting negative sampling + ranking in batches...")
+    batch_size = 200  # You can tune this
+    total_test_links = len(triplets["links"])
+    n_batches = (total_test_links + batch_size - 1) // batch_size
+
+    # Before writing anything, clear (or create) your output files
+    head_path = os.path.join(
+        "/gpfs/workdir/yutaoc/grail/data",
+        params.dataset,
+        "grail_ranking_head_predictions.txt",
+    )
+    tail_path = os.path.join(
+        "/gpfs/workdir/yutaoc/grail/data",
+        params.dataset,
+        "grail_ranking_tail_predictions.txt",
+    )
+    open(head_path, "w").close()  # clear file
+    open(tail_path, "w").close()  # clear file
+
+    for neg_triplets_batch in tqdm(
+        process_in_batches(triplets["links"], adj_list, batch_size, params.num_samples),
+        total=n_batches,
+    ):
+        # `neg_triplets_batch` is a list of length ~ batch_size, each item is the negative samples for 1 test triple
+        results_iter = pool.imap(get_rank, neg_triplets_batch)
+
+        # We'll gather the scores for writing to disk
+        batch_head_scores = []
+        batch_tail_scores = []
+
+        # Extract ranks for MRR/Hits
+        for head_scores, head_rank, tail_scores, tail_rank in results_iter:
+            # accumulate final ranks if needed:
             ranks.append(head_rank)
             ranks.append(tail_rank)
 
-            all_head_scores += head_scores.tolist()
-            all_tail_scores += tail_scores.tolist()
+            # on-the-fly MRR:
+            if head_rank != 10000:
+                sum_rr += 1.0 / head_rank
+                count_ranks += 1
+                for thr in thresholds_to_track:
+                    if head_rank <= thr:
+                        hits_count[thr] += 1
 
-    if params.mode == "ruleN":
-        save_score_to_file_from_ruleN(
-            neg_triplets,
-            all_head_scores,
-            all_tail_scores,
+            if tail_rank != 10000:
+                sum_rr += 1.0 / tail_rank
+                count_ranks += 1
+                for thr in thresholds_to_track:
+                    if tail_rank <= thr:
+                        hits_count[thr] += 1
+
+            # Collect scores for saving
+            batch_head_scores.extend(head_scores.tolist())
+            batch_tail_scores.extend(tail_scores.tolist())
+
+        # Now write out the batch's scores to disk (append mode)
+        save_score_to_file(
+            neg_triplets_batch,
+            batch_head_scores,
+            batch_tail_scores,
             id2entity,
             id2relation,
             params.dataset,
+        )
+
+        # Clear references to free memory
+        del neg_triplets_batch
+        del batch_head_scores
+        del batch_tail_scores
+
+        print_memory_usage()
+
+    # Done with the pool
+    pool.close()
+    pool.join()
+
+    # Final metrics
+    # If you need all ranks for a detailed threshold curve, you have them in `ranks`.
+    # Otherwise you could rely on partial sums.  We'll show both ways:
+
+    # 1) Using partial sums:
+    if count_ranks > 0:
+        mrr = sum_rr / count_ranks
+        hits_1 = hits_count[1] / count_ranks
+        hits_5 = hits_count[5] / count_ranks
+        hits_10 = hits_count[10] / count_ranks
+        logger.info(
+            f"[Partial sums] MRR={mrr:.4f}, Hits@1={hits_1:.4f}, Hits@5={hits_5:.4f}, Hits@10={hits_10:.4f}"
         )
     else:
-        save_score_to_file(
-            neg_triplets,
-            all_head_scores,
-            all_tail_scores,
-            id2entity,
-            id2relation,
-            params.dataset,
-        )
+        logger.info("No valid ranks computed (count_ranks=0).")
 
-    isHit1List = [x for x in ranks if x <= 1]
-    isHit5List = [x for x in ranks if x <= 5]
-    isHit10List = [x for x in ranks if x <= 10]
-    hits_1 = len(isHit1List) / len(ranks)
-    hits_5 = len(isHit5List) / len(ranks)
-    hits_10 = len(isHit10List) / len(ranks)
+    # 2) If we want to do it from the raw list `ranks` (the final approach):
+    #    This might be easier if you need hits@all thresholds.
+    #    `ranks` contains 2 ranks per test triple (head, tail).
+    ranks = [r for r in ranks if r != 10000]  # filter out invalid
+    if len(ranks) == 0:
+        logger.info("No valid ranks, cannot compute final metrics!")
+        return
 
-    mrr = np.mean(1 / np.array(ranks))
+    ranks = np.array(ranks)
+    mrr_final = np.mean(1.0 / ranks)
+    hits1_final = np.mean(ranks <= 1)
+    hits5_final = np.mean(ranks <= 5)
+    hits10_final = np.mean(ranks <= 10)
 
     logger.info(
-        f"MRR | Hits@1 | Hits@5 | Hits@10 : {mrr} | {hits_1} | {hits_5} | {hits_10}"
+        f"[From final ranks array] MRR={mrr_final:.4f}, Hits@1={hits1_final:.4f}, "
+        f"Hits@5={hits5_final:.4f}, Hits@10={hits10_final:.4f}"
     )
 
-    # Initialize results for thresholds
+    # Optionally plot hits up to 50
     thresholds = range(1, 51)
-    hits_at_thresholds = []
-
-    # Loop through thresholds and calculate hits
-    for threshold in thresholds:
-        hits_list = [x for x in ranks if x <= threshold]
-        hits_ratio = len(hits_list) / len(ranks)  # Calculate hit ratio
-        hits_at_thresholds.append(hits_ratio)
-
-    
-
-    # Plot results
+    hits_curve = [np.mean(ranks <= t) for t in thresholds]
     plt.figure(figsize=(10, 6))
-    plt.plot(thresholds, hits_at_thresholds, marker="o", label="Hits@Threshold")
-    plt.axhline(y=mrr, color="r", linestyle="--", label=f"MRR={mrr:.4f}")
-    plt.title("Hits at Thresholds (1 to 49)")
+    plt.plot(thresholds, hits_curve, marker="o", label="Hits@Threshold")
+    plt.axhline(y=mrr_final, color="r", linestyle="--", label=f"MRR={mrr_final:.4f}")
+    plt.title("Hits at Thresholds (1 to 50)")
     plt.xlabel("Threshold")
-    plt.ylabel("Hits Ratio")
+    plt.ylabel("Proportion of test links hitting at or below threshold")
     plt.grid(True)
     plt.legend()
-    plt.savefig(f"hits_{params.dataset}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(params.dataset, dpi=300)
     plt.close()
 
 
 if __name__ == "__main__":
-
     logging.basicConfig(level=logging.INFO)
-
     parser = argparse.ArgumentParser(description="Testing script for hits@10")
+    parser.add_argument("--experiment_name", "-e", type=str, default="default")
+    parser.add_argument("--dataset", "-d", type=str, default="WN18RR")
+    parser.add_argument(
+        "--mode", "-m", type=str, default="sample", choices=["sample", "all", "ruleN"]
+    )
+    parser.add_argument("--use_kge_embeddings", "-kge", type=bool, default=False)
+    parser.add_argument("--kge_model", type=str, default="TransE")
+    parser.add_argument("--enclosing_sub_graph", "-en", type=bool, default=True)
+    parser.add_argument("--hop", type=int, default=3)
+    parser.add_argument("--add_traspose_rels", "-tr", type=bool, default=False)
+    parser.add_argument("--model_path", type=str, default="best_graph_classifier.pth")
+    parser.add_argument("--num_samples", type=int, default=50)
 
-    # Experiment setup params
-    parser.add_argument(
-        "--experiment_name",
-        "-e",
-        type=str,
-        default="default",
-        help="Experiment name. Log file with this name will be created",
-    )
-    parser.add_argument(
-        "--dataset", "-d", type=str, default="WN18RR", help="Path to dataset"
-    )
-    parser.add_argument(
-        "--mode",
-        "-m",
-        type=str,
-        default="sample",
-        choices=["sample", "all", "ruleN"],
-        help="Negative sampling mode",
-    )
-    parser.add_argument(
-        "--use_kge_embeddings",
-        "-kge",
-        type=bool,
-        default=False,
-        help="whether to use pretrained KGE embeddings",
-    )
-    parser.add_argument(
-        "--kge_model",
-        type=str,
-        default="TransE",
-        help="Which KGE model to load entity embeddings from",
-    )
-    parser.add_argument(
-        "--enclosing_sub_graph",
-        "-en",
-        type=bool,
-        default=True,
-        help="whether to only consider enclosing subgraph",
-    )
-    parser.add_argument(
-        "--hop",
-        type=int,
-        default=3,
-        help="How many hops to go while eextracting subgraphs?",
-    )
-    parser.add_argument(
-        "--add_traspose_rels",
-        "-tr",
-        type=bool,
-        default=False,
-        help="Whether to append adj matrix list with symmetric relations?",
-    )
     params = parser.parse_args()
-
     params.file_paths = {
-        "graph": os.path.join("/gpfs/workdir/yutaoc/grail", "data", params.dataset, "train.txt"),
-        "links": os.path.join("/gpfs/workdir/yutaoc/grail", "data", params.dataset, "test.txt"),
+        "graph": os.path.join(
+            "/gpfs/workdir/yutaoc/grail/data", params.dataset, "train.txt"
+        ),
+        "links": os.path.join(
+            "/gpfs/workdir/yutaoc/grail/data", params.dataset, "test.txt"
+        ),
     }
-
     params.ruleN_pred_path = os.path.join(
-        "/gpfs/workdir/yutaoc/grail", "data", params.dataset, "pos_predictions.txt"
+        "/gpfs/workdir/yutaoc/grail/data", params.dataset, "pos_predictions.txt"
     )
     params.model_path = os.path.join(
-        "experiments", params.experiment_name, "best_graph_classifier.pth"
+        "experiments", params.experiment_name, params.model_path
     )
 
     file_handler = logging.FileHandler(
@@ -811,7 +637,6 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger()
     logger.addHandler(file_handler)
-
     logger.info("============ Initialized logger ============")
     logger.info(
         "\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(params)).items()))

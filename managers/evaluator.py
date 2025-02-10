@@ -22,15 +22,12 @@ class Evaluator():
 
         self.graph_classifier.eval()
         with torch.no_grad():
-            for b_idx, batch in enumerate(tqdm(dataloader, desc='Evaluating')):
+            for batch in tqdm(dataloader, desc='Evaluating'):
 
                 data_pos, targets_pos, data_neg, targets_neg = self.params.move_batch_to_device(batch, self.params.device)
-                # print([self.data.id2relation[r.item()] for r in data_pos[1]])
-                # pdb.set_trace()
                 score_pos = self.graph_classifier(data_pos)
                 score_neg = self.graph_classifier(data_neg)
 
-                # preds += torch.argmax(logits.detach().cpu(), dim=1).tolist()
                 pos_scores += score_pos.squeeze(1).detach().cpu().tolist()
                 neg_scores += score_neg.squeeze(1).detach().cpu().tolist()
                 pos_labels += targets_pos.tolist()
@@ -66,8 +63,6 @@ class Evaluator():
         # # print(wrongly_classified_positives.tolist())
         # # print("IDs of wrongly classified negative examples:")
         # # print(wrongly_classified_negatives.tolist())
-
-
 
         if save:
             pos_test_triplets_path = os.path.join(self.params.data_dir, 'data/{}/{}.txt'.format(self.params.dataset, self.data.file_name))

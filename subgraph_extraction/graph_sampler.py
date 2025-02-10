@@ -12,12 +12,10 @@ from scipy.sparse import coo_matrix
 from utils.graph_utils import serialize
 from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
+from utils.time_utils import timing_decorator
 import logging
-import numpy as np
-import random
-import logging
-from tqdm import tqdm
-from scipy.sparse import coo_matrix
+import os
+
 
 def sample_neg(
     adj_list,
@@ -26,13 +24,24 @@ def sample_neg(
     disjoint_ontology: dict = None, 
     range_ontology: dict = None, 
     domain_ontology: dict = None,
+    irreflexive_properties: list = None,
+    asymmetric_properties: list = None,
     max_size=1000000,
     constrained_neg_prob=0,
 ):
     logging.info("Starting negative sampling.")
+    
+    disjoint_ontology = disjoint_ontology or {}
+    range_ontology = range_ontology or {}
+    domain_ontology = domain_ontology or {}
+    irreflexive_properties = irreflexive_properties or []
+    asymmetric_properties = asymmetric_properties or []
+    
     print("disjoint_ontology is loaded in sample_neg with length:", len(disjoint_ontology))
     print("range_ontology is loaded in sample_neg with length:", len(range_ontology))
     print("domain_ontology is loaded in sample_neg with length:", len(domain_ontology))
+    print("irreflexive_properties is loaded in sample_neg with length:", len(irreflexive_properties))
+    print("asymmetric_properties is loaded in sample_neg with length:", len(asymmetric_properties))
     
     pos_edges = edges
     if max_size < len(pos_edges):
@@ -41,6 +50,9 @@ def sample_neg(
     
     n = adj_list[0].shape[0]  # number of nodes
     r = len(adj_list)  # number of relations
+    
+    if r == 0:
+        raise ValueError("Number of relations cannot be zero.")
     
     adj_block = coo_matrix(([], ([], [])), shape=(n * r, n))
     for rel_idx, adj in enumerate(adj_list):
@@ -53,41 +65,25 @@ def sample_neg(
     pos_set = set(tuple(edge) for edge in pos_edges.tolist())
     
     total_negatives = num_neg_samples_per_link * len(pos_edges)
-    num_ontology = int(np.floor(0.05 * total_negatives))
+    num_ontology = int(np.floor(0.001 * total_negatives)) if any([disjoint_ontology, range_ontology, domain_ontology, irreflexive_properties, asymmetric_properties]) else 0
     num_structural = int(np.floor(0.05 * total_negatives))
     num_random = total_negatives - num_ontology - num_structural
     
     def ontology_based_negative(h, t, r):
-        if r in disjoint_ontology and t in disjoint_ontology[r]:
+        if disjoint_ontology and r in disjoint_ontology and t in disjoint_ontology[r]:
             h_prime = random.choice(disjoint_ontology[r][t])
             return (h_prime, r, t)
-        elif r in domain_ontology:
+        elif irreflexive_properties and r in irreflexive_properties:
+            return (h, r, h)
+        elif asymmetric_properties and r in asymmetric_properties:
+            return (t, r, h)
+        elif domain_ontology and r in domain_ontology:
             h_prime = random.choice([e for e in range(n) if e not in domain_ontology[r]])
             return (h_prime, r, t)
-        elif r in range_ontology:
+        elif range_ontology and r in range_ontology:
             t_prime = random.choice([e for e in range(n) if e not in range_ontology[r]])
             return (h, r, t_prime)
         return None
-    
-    random_negatives = []
-    pbar_random = tqdm(total=num_random, desc="Random Negative Sampling")
-    while len(random_negatives) < num_random:
-        batch_size = min(10000, num_random - len(random_negatives))
-        neg_heads = np.random.choice(n, size=batch_size)
-        neg_tails = np.random.choice(n, size=batch_size)
-        rels = np.random.choice(r, size=batch_size)
-        row_offsets = rels * n
-        rows = row_offsets + neg_heads
-        valid_mask = (neg_heads != neg_tails) & (np.asarray(adj_csr[rows, neg_tails]).ravel() == 0)
-        valid_neg_edges = np.stack(
-            [neg_heads[valid_mask], neg_tails[valid_mask], rels[valid_mask]], axis=1
-        )
-        for edge in valid_neg_edges.tolist():
-            if tuple(edge) not in pos_set:
-                random_negatives.append(edge)
-        pbar_random.update(len(valid_neg_edges))
-    pbar_random.close()
-    logging.info("Random negative sampling complete: %d negatives generated.", len(random_negatives))
     
     ontology_negatives = []
     pbar_ontology = tqdm(total=num_ontology, desc="Ontology-Based Negative Sampling")
@@ -103,21 +99,15 @@ def sample_neg(
     pbar_ontology.close()
     logging.info("Ontology-based negative sampling complete: %d negatives generated.", len(ontology_negatives))
     
-    structural_negatives = []
-    pbar_structural = tqdm(total=num_structural, desc="Structural Negative Sampling")
-    idx = 0
-    while len(structural_negatives) < num_structural:
-        h, t, r = pos_edges_list[idx % len(pos_edges_list)]
-        idx += 1
-        new_h = np.random.randint(n)
-        new_t = np.random.randint(n)
-        if (new_h, t, r) not in pos_set and (h, new_t, r) not in pos_set:
-            structural_negatives.append((new_h, r, t) if np.random.rand() < 0.5 else (h, r, new_t))
-            pbar_structural.update(1)
-    pbar_structural.close()
-    logging.info("Structural negative sampling complete: %d negatives generated.", len(structural_negatives))
+    random_negatives = []
+    for _ in range(num_random):
+        h = random.randint(0, n - 1)
+        t = random.randint(0, n - 1)
+        r = random.randint(0, max(r - 1, 0))
+        if (h, r, t) not in pos_set:
+            random_negatives.append((h, r, t))
     
-    neg_edges = np.array(random_negatives[:num_random] + ontology_negatives[:num_ontology] + structural_negatives[:num_structural])
+    neg_edges = np.array(ontology_negatives + random_negatives)
     logging.info("Negative sampling finished successfully. Total negatives generated: %d", neg_edges.shape[0])
     return pos_edges, neg_edges
 
@@ -160,6 +150,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
         for key, value in data_batch:
             txn.put(key, serialize(value))
 
+    @timing_decorator
     def extraction_helper(A, links, g_labels, split_env):
         """Helper function to parallelize subgraph extraction and write results with a real-time progress bar."""
         batch_size = 1000
@@ -360,7 +351,6 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     }
     str_id = "{:08}".format(idx).encode("ascii")
     return str_id, datum
-
 
 def subgraph_extraction_labeling(
     ind,

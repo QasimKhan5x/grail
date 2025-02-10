@@ -406,7 +406,6 @@ if __name__ == "__main__":
             for line in f:
                 # remove comma from the end
                 line = line.strip()[:-1]
-                print("line is", line)
                 if not line:  # Skip empty lines or lines with trailing commas
                     continue
                 parts = line.split(",")
@@ -419,6 +418,29 @@ if __name__ == "__main__":
     else:
         params.domain_ontology = None
         logging.info(f"File domain_file from {domain_file} not found")
+
+    # Read asymmetric properties axioms
+    asymmetric_file = os.path.join(params.data_dir, "data", params.dataset, "AsymmetricProperties_axioms.txt")
+    if os.path.exists(asymmetric_file):
+        with open(asymmetric_file, "r") as f:
+            asymmetric_ontology = [line.strip() for line in f if line.strip()]
+        params.asymmetric_ontology = asymmetric_ontology
+        logging.info(f"Loaded asymmetric_ontology from {asymmetric_file} with the length {len(asymmetric_ontology)}")
+    else:
+        params.asymmetric_ontology = None
+        logging.info(f"File asymmetric_ontology from {asymmetric_file} not found")
+
+    # Read irreflexive properties axioms
+    irreflexive_file = os.path.join(params.data_dir, "data", params.dataset, "IrreflexiveProperties_axioms.txt")
+    if os.path.exists(irreflexive_file):
+        with open(irreflexive_file, "r") as f:
+            irreflexive_ontology = [line.strip() for line in f if line.strip()]
+        params.irreflexive_ontology = irreflexive_ontology
+        logging.info(f"Loaded irreflexive_ontology from {irreflexive_file} with the length {len(irreflexive_ontology)}")
+    else:
+        params.irreflexive_ontology = None
+        logging.info(f"File irreflexive_ontology from {irreflexive_file} not found")
+
 
     if not params.disable_cuda and torch.cuda.is_available():
         params.device = torch.device("cuda:%d" % params.gpu)

@@ -9,13 +9,11 @@ import pickle
 import dgl
 from utils.graph_utils import ssp_multigraph_to_dgl, deserialize
 from utils.data_utils import process_files, save_to_file, plot_rel_dist
-from utils.time_utils import timing_decorator
 from .graph_sampler import *
 import torch
 import logging
 
 
-@timing_decorator
 def generate_subgraph_datasets(
     params, splits=["train", "valid"], saved_relation2id=None, saved_entity2id=None, max_label_value=None
 ):

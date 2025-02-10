@@ -133,7 +133,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max_nodes_per_hop",
-        "-max_h",
+        "-mnph",
         type=int,
         default=None,
         help="if > 0, upper bound the # nodes per hop by subsampling",
