@@ -23,7 +23,7 @@ def generate_subgraph_datasets(
         params.file_paths, saved_relation2id
     )
 
-    # plot_rel_dist(adj_list, os.path.join(params.main_dir, f'data/{params.dataset}/rel_dist.png'))
+    plot_rel_dist(adj_list, os.path.join(params.data_dir, f'data/{params.dataset}/rel_dist.png'))
 
     data_path = os.path.join(params.data_dir, f"data/{params.dataset}/relation2id.json")
     if not os.path.isdir(data_path) and not testing:
@@ -50,7 +50,7 @@ def generate_subgraph_datasets(
         )
 
     if testing:
-        directory = os.path.join(params.main_dir, "data/{}/".format(params.dataset))
+        directory = os.path.join(params.data_dir, "data/{}/".format(params.dataset))
         save_to_file(
             directory,
             f"neg_{params.test_file}_{params.constrained_neg_prob}.txt",

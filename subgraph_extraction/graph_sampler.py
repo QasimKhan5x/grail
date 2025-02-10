@@ -117,7 +117,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
     links_length = sum(
         (len(split["pos"]) + len(split["neg"])) * 2 for split in graphs.values()
     )
-    map_size = math.ceil(links_length * BYTES_PER_DATUM) * 2
+    map_size = math.ceil(links_length * BYTES_PER_DATUM) * 3
 
     env = lmdb.open(params.db_path, map_size=map_size, max_dbs=6)
 
