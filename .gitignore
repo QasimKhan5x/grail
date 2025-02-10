@@ -6,6 +6,8 @@ data/
 logs/
 script.py
 experiments.txt
+train.py
+test_auc.py
 
 #Saved and downloaded data files
 *.nt.gz
