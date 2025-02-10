@@ -12,6 +12,7 @@ from scipy.sparse import coo_matrix
 from utils.graph_utils import serialize
 from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
+from utils.time_utils import timing_decorator
 
 
 def sample_neg(
@@ -87,7 +88,6 @@ def sample_neg(
     neg_edges = np.array(neg_edges)
     return pos_edges, neg_edges
 
-
 def links2subgraphs(A, graphs, params, max_label_value=None):
     """
     Extract enclosing subgraphs, write in batch mode to LMDB, and handle parallel processing efficiently.
@@ -126,6 +126,7 @@ def links2subgraphs(A, graphs, params, max_label_value=None):
         for key, value in data_batch:
             txn.put(key, serialize(value))
 
+    @timing_decorator
     def extraction_helper(A, links, g_labels, split_env):
         """Helper function to parallelize subgraph extraction and write results with a real-time progress bar."""
         batch_size = 1000
@@ -326,7 +327,6 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     }
     str_id = "{:08}".format(idx).encode("ascii")
     return str_id, datum
-
 
 def subgraph_extraction_labeling(
     ind,
