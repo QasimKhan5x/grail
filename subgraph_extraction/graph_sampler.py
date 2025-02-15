@@ -94,14 +94,14 @@ def sample_neg(
                 neg_samples.append((neg_h, neg_t, rel))
 
         return np.array(neg_samples, dtype=np.int32)
-
+    
     def sample_ontology_neg(pos_edges_batch):
         """ Ontology-based negative sampling using semantic constraints. """
         neg_samples = []
         for h, t, rel in pos_edges_batch:
             valid_neg = False
 
-            # Apply disjoint class constraints
+            # DisjointWith-based negatives (replace tail)
             if disjoint_ontology and rel in disjoint_ontology:
                 disjoint_candidates = disjoint_ontology[rel]
                 neg_t = np.random.choice(disjoint_candidates)
@@ -109,14 +109,7 @@ def sample_neg(
                     neg_samples.append((h, neg_t, rel))
                     valid_neg = True
 
-            # Apply range/domain constraints
-            if not valid_neg and range_ontology and rel in range_ontology:
-                range_candidates = range_ontology[rel]
-                neg_t = np.random.choice(range_candidates)
-                if adj_csr[h * r + rel, neg_t] == 0 and h != neg_t:
-                    neg_samples.append((h, neg_t, rel))
-                    valid_neg = True
-
+            # Domain-based negatives (replace head)
             if not valid_neg and domain_ontology and rel in domain_ontology:
                 domain_candidates = domain_ontology[rel]
                 neg_h = np.random.choice(domain_candidates)
@@ -124,7 +117,30 @@ def sample_neg(
                     neg_samples.append((neg_h, t, rel))
                     valid_neg = True
 
-            # If no ontology-based negative is found, fallback to random
+            # Range-based negatives (replace tail)
+            if not valid_neg and range_ontology and rel in range_ontology:
+                range_candidates = range_ontology[rel]
+                neg_t = np.random.choice(range_candidates)
+                if adj_csr[h * r + rel, neg_t] == 0 and h != neg_t:
+                    neg_samples.append((h, neg_t, rel))
+                    valid_neg = True
+
+            # Irreflexive-based negatives (h != t for irreflexive relations)
+            if not valid_neg and irreflexive_properties and rel in irreflexive_properties:
+                if h == t:
+                    neg_t = np.random.choice(n)
+                    while neg_t == h or adj_csr[h * r + rel, neg_t] != 0:
+                        neg_t = np.random.choice(n)
+                    neg_samples.append((h, neg_t, rel))
+                    valid_neg = True
+
+            # Asymmetric-based negatives (reverse the link)
+            if not valid_neg and asymmetric_properties and rel in asymmetric_properties:
+                if adj_csr[t * r + rel, h] != 0:  # If (t, r, h) exists, negate it
+                    neg_samples.append((t, h, rel))
+                    valid_neg = True
+
+            # Fallback to random sampling
             if not valid_neg:
                 neg_h, neg_t = np.random.choice(n, size=2, replace=False)
                 while neg_h == neg_t or adj_csr[neg_h * r + rel, neg_t] != 0:
@@ -167,7 +183,7 @@ def sample_neg(
         pbar.update(len(neg_ontology) + len(neg_structural) + len(valid_neg_edges))
 
     pbar.close()
-    
+
     return pos_edges, np.array(neg_edges, dtype=np.int32)
 
 
