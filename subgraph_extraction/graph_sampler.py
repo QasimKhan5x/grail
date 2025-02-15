@@ -14,16 +14,32 @@ from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
 from utils.time_utils import timing_decorator
 import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, constrained_neg_prob=0):
+def sample_neg(
+    adj_list,
+    edges,
+    num_neg_samples_per_link=1,
+    disjoint_ontology: dict = None, 
+    range_ontology: dict = None, 
+    domain_ontology: dict = None,
+    irreflexive_properties: list = None,
+    asymmetric_properties: list = None,
+    max_size=1000000,
+    constrained_neg_prob=0,
+):
     """
-    Negative sampling with 20% ontology-based structural method and 80% random method.
-    
+    Negative sampling with 20% ontology-based, 20% structural, and 60% random negatives.
+
     Parameters:
         adj_list (list): List of adjacency matrices (one per relation).
         edges (ndarray): Positive edges [head, tail, relation].
         num_neg_samples_per_link (int): Number of negative samples per positive edge.
+        disjoint_ontology (dict): Mapping of relations to disjoint classes.
+        range_ontology (dict): Mapping of relations to their valid range.
+        domain_ontology (dict): Mapping of relations to their valid domain.
+        irreflexive_properties (list): List of irreflexive relations.
+        asymmetric_properties (list): List of asymmetric relations.
         max_size (int): Max number of edges to process.
         constrained_neg_prob (float): Probability of sampling constrained negatives.
 
@@ -52,7 +68,6 @@ def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, co
     def sample_structural_neg(pos_edges_batch):
         """ Structural negative sampling with validation. """
         neg_samples = []
-        
         for h, t, rel in pos_edges_batch:
             valid_neg = False  # Track if a valid structural negative is found
 
@@ -71,7 +86,45 @@ def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, co
                         neg_samples.append((h, neg_t, rel))
                         valid_neg = True
 
-            # **Fallback to random sampling if no valid structural negative is found**
+            # Fallback to random sampling if no valid structural negative is found
+            if not valid_neg:
+                neg_h, neg_t = np.random.choice(n, size=2, replace=False)
+                while neg_h == neg_t or adj_csr[neg_h * r + rel, neg_t] != 0:
+                    neg_h, neg_t = np.random.choice(n, size=2, replace=False)
+                neg_samples.append((neg_h, neg_t, rel))
+
+        return np.array(neg_samples, dtype=np.int32)
+
+    def sample_ontology_neg(pos_edges_batch):
+        """ Ontology-based negative sampling using semantic constraints. """
+        neg_samples = []
+        for h, t, rel in pos_edges_batch:
+            valid_neg = False
+
+            # Apply disjoint class constraints
+            if disjoint_ontology and rel in disjoint_ontology:
+                disjoint_candidates = disjoint_ontology[rel]
+                neg_t = np.random.choice(disjoint_candidates)
+                if adj_csr[h * r + rel, neg_t] == 0 and h != neg_t:
+                    neg_samples.append((h, neg_t, rel))
+                    valid_neg = True
+
+            # Apply range/domain constraints
+            if not valid_neg and range_ontology and rel in range_ontology:
+                range_candidates = range_ontology[rel]
+                neg_t = np.random.choice(range_candidates)
+                if adj_csr[h * r + rel, neg_t] == 0 and h != neg_t:
+                    neg_samples.append((h, neg_t, rel))
+                    valid_neg = True
+
+            if not valid_neg and domain_ontology and rel in domain_ontology:
+                domain_candidates = domain_ontology[rel]
+                neg_h = np.random.choice(domain_candidates)
+                if adj_csr[neg_h * r + rel, t] == 0 and neg_h != t:
+                    neg_samples.append((neg_h, t, rel))
+                    valid_neg = True
+
+            # If no ontology-based negative is found, fallback to random
             if not valid_neg:
                 neg_h, neg_t = np.random.choice(n, size=2, replace=False)
                 while neg_h == neg_t or adj_csr[neg_h * r + rel, neg_t] != 0:
@@ -84,56 +137,38 @@ def sample_neg(adj_list, edges, num_neg_samples_per_link=1, max_size=1000000, co
         batch_size = min(10000, num_neg_samples_per_link * len(pos_edges) - len(neg_edges))
         batch = pos_edges[np.random.choice(len(pos_edges), size=batch_size, replace=False)]
 
+        ontology_sample_size = int(0.2 * batch_size)
         structural_sample_size = int(0.2 * batch_size)
-        random_sample_size = batch_size - structural_sample_size
+        random_sample_size = batch_size - ontology_sample_size - structural_sample_size
 
-        logging.info(f"Generating {structural_sample_size} ontology-based negatives and {random_sample_size} random negatives.")
-        
-        # Structural negative sampling (20%)
-        neg_structural = sample_structural_neg(batch[:structural_sample_size])
-        
-        # Remove invalid ontology negatives (self-loops)
-        neg_structural = np.array([edge for edge in neg_structural if edge[0] != edge[1]])
+        logging.info(f"Generating {ontology_sample_size} ontology-based, {structural_sample_size} structural, and {random_sample_size} random negatives.")
 
-        # Random negative sampling (80%)
+        # Ontology-based negatives
+        neg_ontology = sample_ontology_neg(batch[:ontology_sample_size])
+        neg_ontology = np.array([edge for edge in neg_ontology if edge[0] != edge[1]])  # Remove self-loops
+
+        # Structural negatives
+        neg_structural = sample_structural_neg(batch[ontology_sample_size:ontology_sample_size + structural_sample_size])
+        neg_structural = np.array([edge for edge in neg_structural if edge[0] != edge[1]])  # Remove self-loops
+
+        # Random negatives
         neg_heads = np.random.choice(n, size=random_sample_size)
         neg_tails = np.random.choice(n, size=random_sample_size)
         rels = np.random.choice(r, size=random_sample_size)
-
         row_offsets = rels * n
         rows = row_offsets + neg_heads
         valid_mask = (neg_heads != neg_tails) & (np.asarray(adj_csr[rows, neg_tails]).ravel() == 0)
-
         valid_neg_edges = np.stack([neg_heads[valid_mask], neg_tails[valid_mask], rels[valid_mask]], axis=1)
 
-        if len(neg_structural) > 0:
-            neg_edges.extend(neg_structural.tolist())
+        neg_edges.extend(neg_ontology.tolist())
+        neg_edges.extend(neg_structural.tolist())
         neg_edges.extend(valid_neg_edges.tolist())
-        
-        pbar.update(len(neg_structural) + len(valid_neg_edges))
 
-        # Debug: Print cleaned ontology negatives
-        logging.info(f"Cleaned Ontology Negatives Sample: {neg_structural[:5]}")
-        logging.info(f"Random Negatives Sample: {valid_neg_edges[:5]}")
+        pbar.update(len(neg_ontology) + len(neg_structural) + len(valid_neg_edges))
 
     pbar.close()
     
-    neg_edges = np.array(neg_edges, dtype=np.int32)
-    
-    # Ensure the negative edges have the exact same shape as pos_edges
-    if neg_edges.shape != pos_edges.shape:
-        diff = pos_edges.shape[0] - neg_edges.shape[0]
-        if diff > 0:
-            logging.warning(f"Negative samples are fewer than positive samples. Padding with additional random negatives: {diff} more needed.")
-            extra_neg_heads = np.random.choice(n, size=diff)
-            extra_neg_tails = np.random.choice(n, size=diff)
-            extra_rels = np.random.choice(r, size=diff)
-            extra_neg_edges = np.stack([extra_neg_heads, extra_neg_tails, extra_rels], axis=1)
-            neg_edges = np.vstack([neg_edges, extra_neg_edges])
-    
-    logging.info(f"Finished negative sampling: pos_edges shape = {pos_edges.shape}, neg_edges shape = {neg_edges.shape}")
-    
-    return pos_edges, neg_edges
+    return pos_edges, np.array(neg_edges, dtype=np.int32)
 
 
 def links2subgraphs(A, graphs, params, max_label_value=None):

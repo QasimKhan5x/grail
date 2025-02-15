@@ -54,11 +54,11 @@ def generate_subgraph_datasets(
             adj_list,
             split["triplets"],
             params.num_neg_samples_per_link,
-            # params.disjoint_ontology, 
-            # params.range_ontology, 
-            # params.domain_ontology,
-            # params.asymmetric_ontology,
-            # params.irreflexive_ontology,
+            params.disjoint_ontology, 
+            params.range_ontology, 
+            params.domain_ontology,
+            params.asymmetric_ontology,
+            params.irreflexive_ontology,
             max_size=split["max_size"],
             constrained_neg_prob=params.constrained_neg_prob
         )
