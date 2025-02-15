@@ -13,12 +13,12 @@ from .graph_sampler import *
 import torch
 
 def generate_subgraph_datasets(
-    params, splits=["train", "valid"], saved_relation2id=None, max_label_value=None
+    params, splits=["train", "valid"], saved_relation2id=None, saved_entity2id=None, max_label_value=None
 ):
 
     testing = "test" in splits
     adj_list, triplets, entity2id, relation2id, id2entity, id2relation = process_files(
-        params.file_paths, saved_relation2id
+        params.file_paths, params.saved_relation2id, params.saved_entity2id
     )
 
     plot_rel_dist(adj_list, os.path.join(params.data_dir, f'data/{params.dataset}/rel_dist.png'))
@@ -37,14 +37,30 @@ def generate_subgraph_datasets(
         }
 
     # Sample train and valid/test links
+    # for split_name, split in graphs.items():
+    #     logging.info(f"Sampling negative links for {split_name}")
+    #     split["pos"], split["neg"] = sample_neg(
+    #         adj_list,
+    #         split["triplets"],
+    #         params.num_neg_samples_per_link,
+    #         max_size=split["max_size"],
+    #         constrained_neg_prob=params.constrained_neg_prob,
+    #     )
+
+    # Sample train and valid/test links
     for split_name, split in graphs.items():
         logging.info(f"Sampling negative links for {split_name}")
         split["pos"], split["neg"] = sample_neg(
             adj_list,
             split["triplets"],
             params.num_neg_samples_per_link,
+            # params.disjoint_ontology, 
+            # params.range_ontology, 
+            # params.domain_ontology,
+            # params.asymmetric_ontology,
+            # params.irreflexive_ontology,
             max_size=split["max_size"],
-            constrained_neg_prob=params.constrained_neg_prob,
+            constrained_neg_prob=params.constrained_neg_prob
         )
 
     if testing:
@@ -82,6 +98,8 @@ class SubgraphDataset(Dataset):
         add_traspose_rels=False,
         num_neg_samples_per_link=1,
         use_kge_embeddings=False,
+        saved_relation2id = None,
+        saved_entity2id = None,
         dataset="",
         kge_model="",
         file_name="",
@@ -99,6 +117,8 @@ class SubgraphDataset(Dataset):
         self.dataset = dataset
         self.kge_model = kge_model
         self.file_name = file_name
+        self.saved_relation2id = saved_relation2id
+        self.saved_entity2id = saved_entity2id
 
         # Initialize LMDB related attributes to None
         self.main_env = None
@@ -114,7 +134,7 @@ class SubgraphDataset(Dataset):
 
         # Process files to get graph-related data
         ssp_graph, triplets, entity2id, relation2id, id2entity, id2relation = process_files(
-            raw_data_paths, included_relations
+            raw_data_paths, saved_relation2id, saved_entity2id
         )
         self.num_rels = len(ssp_graph)
 

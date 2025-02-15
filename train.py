@@ -51,6 +51,8 @@ def main(params):
         add_traspose_rels=params.add_traspose_rels,
         num_neg_samples_per_link=params.num_neg_samples_per_link,
         use_kge_embeddings=params.use_kge_embeddings,
+        saved_relation2id=params.saved_relation2id,
+        saved_entity2id=params.saved_entity2id,
         dataset=params.dataset,
         kge_model=params.kge_model,
         file_name=params.train_file,
@@ -63,6 +65,8 @@ def main(params):
         add_traspose_rels=params.add_traspose_rels,
         num_neg_samples_per_link=params.num_neg_samples_per_link,
         use_kge_embeddings=params.use_kge_embeddings,
+        saved_relation2id=params.saved_relation2id,
+        saved_entity2id=params.saved_entity2id,
         dataset=params.dataset,
         kge_model=params.kge_model,
         file_name=params.valid_file,
@@ -319,6 +323,130 @@ if __name__ == "__main__":
             params.data_dir, "data/{}/{}.txt".format(params.dataset, params.valid_file)
         ),
     }
+
+    # Test Use Elisa's Map
+    relation2id_file = os.path.join(params.data_dir, "data", params.dataset, "relation2id.txt")
+    if os.path.exists(relation2id_file):
+        saved_relation2id = {}
+        with open(relation2id_file, "r") as f:
+            next(f)  # Skip First Line
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    relation = parts[0]
+                    rel_id = int(parts[1])
+                    saved_relation2id[relation] = rel_id
+        params.saved_relation2id = saved_relation2id
+        logging.info(f"Loaded saved_relation2id from {relation2id_file}")
+    else:
+        params.saved_relation2id = None
+        logging.info(f"File saved_relation2id from {relation2id_file} not found")
+
+
+
+    entity2id_file = os.path.join(params.data_dir, "data", params.dataset, "entity2id.txt")
+    if os.path.exists(entity2id_file):
+        saved_entity2id = {}
+        with open(entity2id_file, "r") as f:
+            next(f)  # Skip First Line
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    entity = parts[0]
+                    rel_id = int(parts[1])
+                    saved_entity2id[entity] = rel_id
+        params.saved_entity2id = saved_entity2id
+        logging.info(f"Loaded saved_entity2id from {entity2id_file}")
+    else:
+        params.saved_entity2id = None
+        logging.info(f"File saved_entity2id from {entity2id_file} not found")
+
+
+
+    disjoint_file = os.path.join(params.data_dir, "data", params.dataset, "DisjointWith_axioms.txt")
+    if os.path.exists(disjoint_file):
+        disjoint_ontology = {}
+        with open(disjoint_file, "r") as f:
+            for line in f:
+                # remove comma from the end
+                line = line.strip()[:-1]
+                if not line:  # Skip empty lines or lines with trailing commas
+                    continue
+                parts = line.split(",")
+                if len(parts) > 1:  # Ensure valid format
+                    key = int(parts[0])  # Convert the key to integer
+                    values = list(map(int, parts[1:]))  # Convert disjoint values to integers
+                    disjoint_ontology[key] = values
+        params.disjoint_ontology = disjoint_ontology
+        logging.info(f"Loaded disjoint_ontology from {disjoint_file} ith the length {len(disjoint_ontology)}")
+    else:
+        params.disjoint_ontology = None
+        logging.info(f"File disjoint_ontology from {disjoint_file} not found")
+
+    range_file = os.path.join(params.data_dir, "data", params.dataset, "Domain_axioms.txt")
+    if os.path.exists(range_file):
+        range_ontology = {}
+        with open(range_file, "r") as f:
+            for line in f:
+                # remove comma from the end
+                line = line.strip()[:-1]
+                if not line:  # Skip empty lines or lines with trailing commas
+                    continue
+                parts = line.split(",")
+                if len(parts) > 1:  # Ensure valid format
+                    key = int(parts[0])  # Convert the key to integer
+                    values = list(map(int, parts[1:]))  # Convert disjoint values to integers
+                    range_ontology[key] = values
+        params.range_ontology = range_ontology
+        logging.info(f"Loaded range_file from {range_file} ith the length {len(range_ontology)}")
+    else:
+        params.range_ontology = None
+        logging.info(f"File range_file from {range_file} not found")
+
+    domain_file = os.path.join(params.data_dir, "data", params.dataset, "Range_axioms.txt")
+    if os.path.exists(disjoint_file):
+        domain_ontology = {}
+        with open(domain_file, "r") as f:
+            for line in f:
+                # remove comma from the end
+                line = line.strip()[:-1]
+                if not line:  # Skip empty lines or lines with trailing commas
+                    continue
+                parts = line.split(",")
+                if len(parts) > 1:  # Ensure valid format
+                    key = int(parts[0])  # Convert the key to integer
+                    values = list(map(int, parts[1:]))  # Convert disjoint values to integers
+                    domain_ontology[key] = values
+        params.domain_ontology = domain_ontology
+        logging.info(f"Loaded domain_file from {domain_file} ith the length {len(domain_ontology)}")
+    else:
+        params.domain_ontology = None
+        logging.info(f"File domain_file from {domain_file} not found")
+
+    # Read asymmetric properties axioms
+    asymmetric_file = os.path.join(params.data_dir, "data", params.dataset, "AsymmetricProperties_axioms.txt")
+    if os.path.exists(asymmetric_file):
+        with open(asymmetric_file, "r") as f:
+            asymmetric_ontology = [line.strip() for line in f if line.strip()]
+        params.asymmetric_ontology = asymmetric_ontology
+        logging.info(f"Loaded asymmetric_ontology from {asymmetric_file} with the length {len(asymmetric_ontology)}")
+    else:
+        params.asymmetric_ontology = None
+        logging.info(f"File asymmetric_ontology from {asymmetric_file} not found")
+
+    # Read irreflexive properties axioms
+    irreflexive_file = os.path.join(params.data_dir, "data", params.dataset, "IrreflexiveProperties_axioms.txt")
+    if os.path.exists(irreflexive_file):
+        with open(irreflexive_file, "r") as f:
+            irreflexive_ontology = [line.strip() for line in f if line.strip()]
+        params.irreflexive_ontology = irreflexive_ontology
+        logging.info(f"Loaded irreflexive_ontology from {irreflexive_file} with the length {len(irreflexive_ontology)}")
+    else:
+        params.irreflexive_ontology = None
+        logging.info(f"File irreflexive_ontology from {irreflexive_file} not found")
+
+
+
 
     if not params.disable_cuda and torch.cuda.is_available():
         params.device = torch.device("cuda:%d" % params.gpu)
