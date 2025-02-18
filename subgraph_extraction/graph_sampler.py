@@ -25,6 +25,8 @@ def sample_neg(
     domain_ontology: dict = None,
     irreflexive_properties: list = None,
     asymmetric_properties: list = None,
+    ontology_ratio=0.2,
+    structural_ratio=0.2,
     max_size=1000000,
     constrained_neg_prob=0,
 ):
@@ -153,8 +155,8 @@ def sample_neg(
         batch_size = min(10000, num_neg_samples_per_link * len(pos_edges) - len(neg_edges))
         batch = pos_edges[np.random.choice(len(pos_edges), size=batch_size, replace=False)]
 
-        ontology_sample_size = int(0.2 * batch_size)
-        structural_sample_size = int(0.2 * batch_size)
+        ontology_sample_size = int(ontology_ratio * batch_size)
+        structural_sample_size = int(structural_ratio * batch_size)
         random_sample_size = batch_size - ontology_sample_size - structural_sample_size
 
         logging.info(f"Generating {ontology_sample_size} ontology-based, {structural_sample_size} structural, and {random_sample_size} random negatives.")

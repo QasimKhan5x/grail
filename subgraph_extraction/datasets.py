@@ -59,6 +59,8 @@ def generate_subgraph_datasets(
             params.domain_ontology,
             params.asymmetric_ontology,
             params.irreflexive_ontology,
+            params.ontology_ratio,
+            params.structural_ratio,
             max_size=split["max_size"],
             constrained_neg_prob=params.constrained_neg_prob
         )

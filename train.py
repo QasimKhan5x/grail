@@ -309,7 +309,12 @@ if __name__ == "__main__":
         default=True,
         help="whether to have attn in model or not",
     )
-
+    parser.add_argument(
+        "--ontology_ratio", type=float, default=0.2, help="Percentage of Ontology Ratio in Negative Generation"
+    )
+    parser.add_argument(
+        "--structural_ratio", type=float, default=0.2, help="Percentage of Structural Ratio in Negative Generation"
+    )
     params = parser.parse_args()
     initialize_experiment(params, __file__)
 
