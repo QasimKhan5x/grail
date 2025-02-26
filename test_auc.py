@@ -113,7 +113,7 @@ if __name__ == "__main__":
         help="Name of file containing test triplets",
     )
     parser.add_argument(
-        "--runs", type=int, default=1, help="How many runs to perform for mean and std?"
+        "--runs", type=int, default=5, help="How many runs to perform for mean and std?"
     )
     parser.add_argument("--gpu", type=int, default=0, help="Which GPU to use?")
     parser.add_argument("--disable_cuda", action="store_true", help="Disable CUDA")

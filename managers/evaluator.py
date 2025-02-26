@@ -33,19 +33,12 @@ class Evaluator():
                 pos_labels += targets_pos.tolist()
                 neg_labels += targets_neg.tolist()
 
-        # acc = metrics.accuracy_score(labels, preds)
         scores = np.array(pos_scores + neg_scores)
         scores_prob = 1 / (1 + np.exp(-scores))
         auc = metrics.roc_auc_score(pos_labels + neg_labels, scores_prob)
         auc_pr = metrics.average_precision_score(pos_labels + neg_labels, scores_prob)
 
-        precision, recall, thresholds = metrics.precision_recall_curve(pos_labels + neg_labels, scores_prob)
-        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
-        best_threshold_index = np.argmax(f1_scores)
-        best_threshold = thresholds[best_threshold_index]
-        print("Best Threshold: ", best_threshold)
-        # Threshold for classification
-        y_pred = (scores_prob >= best_threshold).astype(int)
+        y_pred = (scores_prob >= 0.5).astype(int)
         report = metrics.classification_report(pos_labels + neg_labels, y_pred, target_names=['Negative', 'Positive'])
 
         print("Validation Classification Report: \n", report)

@@ -148,7 +148,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval_every_iter",
         type=int,
-        default=455,
+        default=None,
         help="Interval of iterations to evaluate the model?",
     )
     parser.add_argument(
@@ -233,7 +233,7 @@ if __name__ == "__main__":
         help="Number of negative examples to sample per positive link",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=8, help="Number of dataloading processes"
+        "--num_workers", type=int, default=16, help="Number of dataloading processes"
     )
     parser.add_argument(
         "--add_traspose_rels",

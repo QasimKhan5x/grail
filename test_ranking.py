@@ -231,7 +231,6 @@ def get_subgraphs(
     """
     Extract subgraphs for each link in `all_links`.
     """
-    from subgraph_extraction.graph_sampler import subgraph_extraction_labeling
 
     subgraphs = []
     r_labels = []
@@ -251,6 +250,7 @@ def get_subgraphs(
             h=params_.hop,
             enclosing_sub_graph=params_.enclosing_sub_graph,
             max_node_label_value=max_node_label_value,
+            max_nodes_per_hop=params_.max_nodes_per_hop
         )[:2]
 
         # Subgraph
@@ -614,6 +614,13 @@ if __name__ == "__main__":
     parser.add_argument("--add_traspose_rels", "-tr", type=bool, default=False)
     parser.add_argument("--model_path", type=str, default="best_graph_classifier.pth")
     parser.add_argument("--num_samples", type=int, default=50)
+    parser.add_argument(
+        "--max_nodes_per_hop",
+        "-mnph",
+        type=int,
+        default=None,
+        help="if > 0, upper bound the # nodes per hop by subsampling",
+    )
 
     params = parser.parse_args()
     params.file_paths = {

@@ -88,6 +88,7 @@ def sample_neg(
     neg_edges = np.array(neg_edges)
     return pos_edges, neg_edges
 
+
 def links2subgraphs(A, graphs, params, max_label_value=None):
     """
     Extract enclosing subgraphs, write in batch mode to LMDB, and handle parallel processing efficiently.
@@ -292,15 +293,6 @@ def extract_save_subgraph(args_, A, params, max_label_value):
             params.max_nodes_per_hop,
         )
     )
-    # hop = 1
-    # subgraph_size = 0
-    # nodes, n_labels, enc_ratio, num_pruned_nodes = [], [], 0, 0
-
-    # while subgraph_size < 100 and hop <= params.hop:
-    #     nodes, n_labels, subgraph_size, enc_ratio, num_pruned_nodes = subgraph_extraction_labeling(
-    #         (n1, n2), r_label, A, hop, params.enclosing_sub_graph, params.max_nodes_per_hop
-    #     )
-    #     hop += 1
 
     # Ensure n_labels is valid
     if n_labels.size == 0:
@@ -327,6 +319,7 @@ def extract_save_subgraph(args_, A, params, max_label_value):
     }
     str_id = "{:08}".format(idx).encode("ascii")
     return str_id, datum
+
 
 def subgraph_extraction_labeling(
     ind,
@@ -412,7 +405,7 @@ def subgraph_extraction_labeling(
     # -----------------------------------------------------
     union_nodes = set(distances_u.keys()) | set(distances_v.keys())
     
-    # Keep only nodes x where dist_u(x) <= h, dist_v(x) <= h, and dist_u(x) + dist_v(x) <= (h + 1)
+    # Keep only nodes x where dist_u(x) <= h or dist_v(x) <= h
     subgraph_nodes = []
     for x in union_nodes:
         du = distances_u.get(x, 999)
