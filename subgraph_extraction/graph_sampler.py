@@ -367,41 +367,33 @@ def subgraph_extraction_labeling(
     """
 
     def bfs_with_distances_sampling(start, adj_matrix, max_hops, max_nodes_per_hop=None):
-        """
-        Perform a BFS up to 'max_hops' away from 'start'. If 'max_nodes_per_hop'
-        is not None, then for each BFS layer, we keep at most 'max_nodes_per_hop'
-        randomly sampled nodes.
-        
-        Returns:
-            visited (dict): node -> distance from 'start' (0-based).
-        """
-        visited = {}
+        visited = {start: 0}
         current_layer = [start]
-        visited[start] = 0
         distance = 0
         
-        while distance < max_hops and current_layer:
-            next_layer = []
+        while current_layer and distance < max_hops:
+            next_layer = set()
+            
+            # Collect all unvisited neighbors from the current layer
             for node in current_layer:
-                # All neighbors of 'node'
                 row_start = adj_matrix.indptr[node]
                 row_end = adj_matrix.indptr[node + 1]
                 neighbors = adj_matrix.indices[row_start:row_end]
                 for nbr in neighbors:
                     if nbr not in visited:
-                        visited[nbr] = distance + 1
-                        next_layer.append(nbr)
-            
+                        next_layer.add(nbr)
+
+            # Sample before marking them visited
+            if max_nodes_per_hop and max_nodes_per_hop < len(next_layer):
+                next_layer = set(random.sample(list(next_layer), max_nodes_per_hop))
+
+            # Now mark the sampled nodes as visited
+            for node in next_layer:
+                visited[node] = distance + 1
+
+            current_layer = list(next_layer)
             distance += 1
-            # If we haven't reached max_hops yet, we may need to sample from next_layer
-            # to avoid exploding subgraphs
-            if distance < max_hops and max_nodes_per_hop is not None:
-                if len(next_layer) > max_nodes_per_hop:
-                    # Randomly sample a subset
-                    next_layer = random.sample(next_layer, max_nodes_per_hop)
-            
-            current_layer = next_layer
-        
+
         return visited
 
     # -----------------------------------------------------
@@ -423,9 +415,9 @@ def subgraph_extraction_labeling(
     # Keep only nodes x where dist_u(x) <= h, dist_v(x) <= h, and dist_u(x) + dist_v(x) <= (h + 1)
     subgraph_nodes = []
     for x in union_nodes:
-        du = distances_u.get(x, 999999)
-        dv = distances_v.get(x, 999999)
-        if du <= h and dv <= h and (du + dv) <= (h + 1):
+        du = distances_u.get(x, 999)
+        dv = distances_v.get(x, 999)
+        if du <= h or dv <= h:
             subgraph_nodes.append(x)
     
     subgraph_nodes = sorted(subgraph_nodes)
@@ -436,7 +428,6 @@ def subgraph_extraction_labeling(
     # 4) Build adjacency submatrix for these subgraph_nodes
     # -----------------------------------------------------
     idx_map = {node_id: i for i, node_id in enumerate(subgraph_nodes)}
-    sub_n = len(subgraph_nodes)
     # Extract sub-adjacency
     sub_adj = full_adj[subgraph_nodes, :][:, subgraph_nodes].tocsr()
 

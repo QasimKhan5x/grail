@@ -1,5 +1,6 @@
 import time
 from functools import wraps
+import logging
 
 def timing_decorator(func):
     @wraps(func)
@@ -8,7 +9,7 @@ def timing_decorator(func):
         result = func(*args, **kwargs)    # Call the actual function
         end_time = time.perf_counter()    # Record end time
         duration = end_time - start_time  # Calculate duration
-        print(f"Execution Time of '{func.__name__}': {duration:.4f} seconds")
+        logging.info(f"Execution Time of '{func.__name__}': {duration:.4f} seconds")
         return result
     return wrapper
 

@@ -56,6 +56,10 @@ class Trainer():
         )
         self.graph_classifier.train()
         model_params = list(self.graph_classifier.parameters())
+
+        if not self.params.eval_every_iter:
+            self.params.eval_every_iter = len(dataloader) // 4
+
         for b_idx, batch in enumerate(tqdm(dataloader, desc='Training')):
             data_pos, targets_pos, data_neg, targets_neg = self.params.move_batch_to_device(batch, self.params.device)
             self.optimizer.zero_grad()
@@ -98,6 +102,7 @@ class Trainer():
                     self.not_improved_count += 1
                     if self.not_improved_count > self.params.early_stop:
                         logging.info(f"Validation performance didn\'t improve for {self.params.early_stop} epochs. Training stops.")
+                        self.do_train = False
                         break
                 self.last_metric = result['auc']
 
@@ -112,6 +117,7 @@ class Trainer():
         return total_loss, auc, auc_pr, weight_norm
 
     def train(self):
+        self.do_train = True
         self.reset_training_state()
 
         for epoch in range(1, self.params.num_epochs + 1):
@@ -122,6 +128,8 @@ class Trainer():
 
             if epoch % self.params.save_every == 0:
                 torch.save(self.graph_classifier, os.path.join(self.params.exp_dir, 'graph_classifier_chk.pth'))
+            if not self.do_train:
+                break
 
     def save_classifier(self):
         torch.save(self.graph_classifier, os.path.join(self.params.exp_dir, 'best_graph_classifier.pth'))  # Does it overwrite or fuck with the existing file?

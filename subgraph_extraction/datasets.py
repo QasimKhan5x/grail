@@ -27,6 +27,10 @@ def generate_subgraph_datasets(
     if not os.path.isdir(data_path) and not testing:
         with open(data_path, "w") as f:
             json.dump(relation2id, f)
+    data_path = os.path.join(params.data_dir, f"data/{params.dataset}/entity2id.json")
+    if not os.path.isdir(data_path) and not testing:
+        with open(data_path, "w") as f:
+            json.dump(entity2id, f)
 
     graphs = {}
 
@@ -129,6 +133,9 @@ class SubgraphDataset(Dataset):
         self.ssp_graph = ssp_graph
         self.id2entity = id2entity
         self.id2relation = id2relation
+        self.triplets = triplets
+        self.entity2id = entity2id
+        self.relation2id = relation2id
 
         # Initialize stats to None; they will be loaded from LMDB
         self.max_n_label = np.array([0, 0])
